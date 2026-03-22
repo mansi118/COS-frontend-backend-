@@ -198,6 +198,16 @@ async def auto_email_scheduler():
             sent_today.clear()
             last_date = today
 
+        # 00:01 IST — Save daily pulse snapshot
+        if hour_min == "00:01" and "pulse_snapshot" not in sent_today:
+            sent_today.add("pulse_snapshot")
+            try:
+                from routers.pulse import save_pulse_snapshot
+                save_pulse_snapshot()
+                print(f"[AUTO] Pulse snapshot saved at {hour_min} IST")
+            except Exception as e:
+                print(f"[AUTO] Pulse snapshot failed: {e}")
+
         # 09:00 IST — Morning briefing to CEO
         if hour_min == "09:00" and "morning" not in sent_today:
             sent_today.add("morning")
@@ -318,4 +328,11 @@ async def startup_event():
     """Start the file watcher and auto-email scheduler on app startup."""
     asyncio.create_task(watch_workspace())
     asyncio.create_task(auto_email_scheduler())
-    print("[SCHEDULER] Auto-email scheduler started (09:00/10:00/18:00 IST)")
+    # Save today's pulse snapshot on startup
+    try:
+        from routers.pulse import save_pulse_snapshot
+        save_pulse_snapshot()
+        print("[STARTUP] Pulse snapshot saved for today")
+    except Exception as e:
+        print(f"[STARTUP] Pulse snapshot failed: {e}")
+    print("[SCHEDULER] Auto-email scheduler started (00:01/09:00/10:00/11:00/18:00 IST)")
