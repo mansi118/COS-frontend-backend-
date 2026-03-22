@@ -7,7 +7,7 @@ from typing import Set
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from database import engine, Base
-from routers import pulse, followups, performance, clients, sprint, briefing, tasks, meetings, vault, email, fireflies, gmail, finance, intel, execute, taskflow
+from routers import pulse, followups, performance, clients, sprint, briefing, tasks, meetings, vault, email, fireflies, gmail, finance, intel, execute, taskflow, whatsapp, slack
 import cos_reader
 
 Base.metadata.create_all(bind=engine)
@@ -38,6 +38,8 @@ app.include_router(finance.router)
 app.include_router(intel.router)
 app.include_router(execute.router)
 app.include_router(taskflow.router)
+app.include_router(whatsapp.router)
+app.include_router(slack.router)
 
 
 @app.get("/")

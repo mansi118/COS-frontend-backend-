@@ -11,7 +11,7 @@ const navItems = [
   { href: '/sprint', label: 'Sprint', icon: '⟳' },
   { href: '/meetings', label: 'Meetings', icon: '◷' },
   { href: '/vault', label: 'Vault', icon: '▣' },
-  { href: '/email', label: 'Email', icon: '✉' },
+  { href: '/comms', label: 'Team Comms', icon: '📡' },
   { href: '/fireflies', label: 'Fireflies', icon: '🔥' },
   { href: '/finance', label: 'Finance', icon: '₹' },
   { href: '/intel', label: 'Intel', icon: '🌐' },
