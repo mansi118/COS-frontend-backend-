@@ -23,6 +23,7 @@ export default function CommsPage() {
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
   const [sending, setSending] = useState(false);
+  const [runningAction, setRunningAction] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
   const [history, setHistory] = useState<SentRecord[]>([]);
   const [showTemplates, setShowTemplates] = useState(false);
@@ -117,7 +118,7 @@ export default function CommsPage() {
   };
 
   const runAutomation = async (action: string, label: string, channels: Channel[] = ['email']) => {
-    setSending(true); setResult(null);
+    setSending(true); setRunningAction(label); setResult(null);
     const results: string[] = [];
     for (const ch of channels) {
       try {
@@ -140,6 +141,7 @@ export default function CommsPage() {
     }
     setResult(`${label}: ${results.join(' · ')}`);
     setSending(false);
+    setRunningAction(null);
     setTimeout(() => setResult(null), 5000);
   };
 
@@ -353,9 +355,9 @@ export default function CommsPage() {
                         ))}
                       </div>
                     </div>
-                    <button onClick={() => runAutomation(a.action, a.name, a.channels)} disabled={sending}
+                    <button onClick={() => runAutomation(a.action, a.name, a.channels)} disabled={runningAction === a.name}
                       className="btn btn-primary text-[11px] py-1.5 shrink-0 disabled:opacity-40">
-                      {sending ? '...' : 'Run'}
+                      {runningAction === a.name ? '...' : 'Run'}
                     </button>
                   </div>
                 </div>
