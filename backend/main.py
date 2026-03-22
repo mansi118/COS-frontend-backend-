@@ -7,7 +7,7 @@ from typing import Set
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from database import engine, Base
-from routers import pulse, followups, performance, clients, sprint, briefing, tasks, meetings, vault, email, fireflies, gmail, finance, intel, execute, taskflow, whatsapp, slack
+from routers import pulse, followups, performance, clients, sprint, briefing, tasks, meetings, vault, email, fireflies, gmail, finance, intel, execute, taskflow, whatsapp, slack, standups
 import cos_reader
 
 Base.metadata.create_all(bind=engine)
@@ -40,6 +40,7 @@ app.include_router(execute.router)
 app.include_router(taskflow.router)
 app.include_router(whatsapp.router)
 app.include_router(slack.router)
+app.include_router(standups.router)
 
 
 @app.get("/")
@@ -64,6 +65,7 @@ DIR_TYPE_MAP = {
     "decisions": "decision_update",
     "vault": "vault_update",
     "config": "config_update",
+    "standups": "standup_update",
 }
 
 
@@ -265,6 +267,26 @@ async def auto_email_scheduler():
                     print(f"[AUTO-EMAIL] Overdue alerts sent to {len(notified)} people at {hour_min} IST")
             except Exception as e:
                 print(f"[AUTO-EMAIL] Overdue alerts failed: {e}")
+
+        # 11:00 IST — Standup reminder to missing members
+        if hour_min == "11:00" and "standup_remind" not in sent_today:
+            sent_today.add("standup_remind")
+            try:
+                import standup_local
+                stats = standup_local.get_standup_stats()
+                missing = stats.get("missing", [])
+                if missing and not stats.get("is_weekend"):
+                    from routers.slack import _slack_api, _resolve_user
+                    for person in missing:
+                        user_id = _resolve_user(person)
+                        if user_id:
+                            _slack_api("chat.postMessage", {
+                                "channel": user_id,
+                                "text": f"Hey {person} 👋 You haven't posted your standup today. Post it at the PULSE dashboard → Updates page."
+                            })
+                    print(f"[AUTO] Standup reminders sent to {len(missing)} people at {hour_min} IST")
+            except Exception as e:
+                print(f"[AUTO] Standup reminder failed: {e}")
 
         # 18:00 IST — EOD summary to CEO
         if hour_min == "18:00" and "eod" not in sent_today:

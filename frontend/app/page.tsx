@@ -59,6 +59,7 @@ export default function DashboardPage() {
   const [pulse, setPulse] = useState<PulseData | null>(null);
   const [briefing, setBriefing] = useState<BriefingData | null>(null);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
+  const [standupSummary, setStandupSummary] = useState<{posted_today: number; missing_today: number; missing_names: string[]; blockers_count: number; team_mood: string; highlights: string[]; total_team: number} | null>(null);
   const [loading, setLoading] = useState(true);
   const { lastMessage, isConnected } = useWebSocket();
 
@@ -67,10 +68,12 @@ export default function DashboardPage() {
       fetch(`${API}/api/pulse`).then((r) => r.json()),
       fetch(`${API}/api/briefing/morning`).then((r) => r.json()),
       fetch(`${API}/api/meetings/today`).then((r) => r.json()).catch(() => []),
-    ]).then(([pulseData, briefingData, meetingsData]) => {
+      fetch(`${API}/api/standups/summary`).then((r) => r.json()).catch(() => null),
+    ]).then(([pulseData, briefingData, meetingsData, standupData]) => {
       setPulse(pulseData);
       setBriefing(briefingData);
       setMeetings(Array.isArray(meetingsData) ? meetingsData : meetingsData.meetings || []);
+      setStandupSummary(standupData);
       setLoading(false);
     }).catch(() => setLoading(false));
   };
@@ -188,6 +191,50 @@ export default function DashboardPage() {
           ))}
         </div>
       </div>
+
+      {/* Today's Standups */}
+      {standupSummary && (
+        <div>
+          <p className="section-label">Daily Standups</p>
+          {standupSummary.posted_today > 0 ? (
+            <div className="card p-4">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-3">
+                  <span className="text-[13px] font-medium" style={{ color: '#e5e7eb' }}>
+                    {standupSummary.posted_today}/{standupSummary.total_team} posted
+                  </span>
+                  <span className="text-[11px]" style={{ color: '#6b7280' }}>
+                    Team mood: {standupSummary.team_mood}
+                  </span>
+                  {standupSummary.blockers_count > 0 && (
+                    <span className="badge badge-red text-[10px]">{standupSummary.blockers_count} blocker{standupSummary.blockers_count > 1 ? 's' : ''}</span>
+                  )}
+                </div>
+                <a href="/updates" className="text-[11px] font-medium" style={{ color: '#818cf8' }}>View all →</a>
+              </div>
+              {standupSummary.highlights.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {standupSummary.highlights.slice(0, 4).map((h, i) => (
+                    <span key={i} className="text-[11px] px-2 py-1 rounded-md" style={{ background: 'rgba(255,255,255,0.04)', color: '#9ca3af' }}>{h}</span>
+                  ))}
+                </div>
+              )}
+              {standupSummary.missing_today > 0 && (
+                <p className="text-[11px] mt-2" style={{ color: '#facc15' }}>
+                  ⚠️ Missing: {standupSummary.missing_names.join(', ')}
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className="card p-4">
+              <div className="flex items-center justify-between">
+                <p className="text-[12px]" style={{ color: '#6b7280' }}>No standups posted yet today</p>
+                <a href="/updates" className="text-[11px] font-medium" style={{ color: '#818cf8' }}>Post update →</a>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
