@@ -15,6 +15,7 @@ const navItems = [
   { href: '/fireflies', label: 'Fireflies', icon: '🔥' },
   { href: '/finance', label: 'Finance', icon: '₹' },
   { href: '/intel', label: 'Intel', icon: '🌐' },
+  { href: '/taskflow', label: 'TaskFlow', icon: '✓' },
 ];
 
 export default function Sidebar() {
