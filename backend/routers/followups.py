@@ -5,6 +5,7 @@ from models import Followup
 from schemas import FollowupCreate, FollowupUpdate, FollowupOut
 from datetime import date, datetime
 import cos_reader
+import standup_fanout
 
 router = APIRouter(prefix="/api/followups", tags=["followups"])
 
@@ -20,7 +21,9 @@ def _cos_to_api(fu: dict, idx: int = 0) -> dict:
         "priority": fu.get("priority"),
         "status": fu.get("status", "open"),
         "source": fu.get("source"),
+        "source_id": fu.get("source_id"),
         "notes": fu.get("notes"),
+        "checklist": fu.get("checklist_items"),
         "created_at": fu.get("created"),
         "updated_at": fu.get("updated"),
         "resolved_at": fu.get("resolved_at"),
@@ -32,6 +35,7 @@ def list_followups(
     status: str = Query(None),
     who: str = Query(None),
     priority: str = Query(None),
+    source: str = Query(None),
     db: Session = Depends(get_db),
 ):
     # Primary: read from CoS workspace
@@ -44,6 +48,8 @@ def list_followups(
             results = [f for f in results if f.get("who") == who]
         if priority:
             results = [f for f in results if f.get("priority") == priority]
+        if source:
+            results = [f for f in results if f.get("source") == source]
         # Sort by created desc
         results.sort(key=lambda f: f.get("created", ""), reverse=True)
         return [_cos_to_api(f, i + 1) for i, f in enumerate(results)]
@@ -73,10 +79,11 @@ def create_followup(data: FollowupCreate, db: Session = Depends(get_db)):
         "who": data.who,
         "due": str(data.due) if data.due else None,
         "source": data.source,
-        "source_id": None,
+        "source_id": data.source_id,
         "priority": data.priority or "P2",
         "status": "open",
         "notes": data.notes or "",
+        "checklist_items": data.checklist,
         "created": now,
         "updated": now,
         "resolved_at": None,
@@ -96,12 +103,20 @@ def create_followup(data: FollowupCreate, db: Session = Depends(get_db)):
         priority=data.priority or "P2",
         status="open",
         source=data.source,
+        source_id=data.source_id,
         notes=data.notes,
+        checklist=data.checklist,
     )
     db.add(fu)
     db.commit()
     db.refresh(fu)
     return fu
+
+
+@router.put("/{fu_id}/checklist/{item_index}/toggle")
+def toggle_checklist_item(fu_id: str, item_index: int, db: Session = Depends(get_db)):
+    """Toggle a checklist item (check ↔ uncheck). Auto-resolves if all done, un-resolves if unchecked."""
+    return standup_fanout.confirm_checklist_resolution(fu_id, item_index, db)
 
 
 @router.put("/{fu_id}")

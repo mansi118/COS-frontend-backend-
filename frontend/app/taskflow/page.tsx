@@ -22,6 +22,7 @@ interface Task {
   tags?: string[];
   is_today?: boolean;
   checklist_items?: Array<{ title: string; is_completed?: boolean }>;
+  source?: string;
   created?: string;
 }
 
@@ -288,6 +289,13 @@ export default function TaskFlowPage() {
 
                       <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                         <span className="text-[9px] font-mono" style={{ color: '#4b5563' }}>{t.id}</span>
+
+                        {t.source === 'standup' && (
+                          <span className="text-[9px] px-1.5 py-0.5 rounded font-medium" style={{ background: 'rgba(99,102,241,0.1)', color: '#818cf8' }}>Standup</span>
+                        )}
+                        {t.source === 'meeting' && (
+                          <span className="text-[9px] px-1.5 py-0.5 rounded font-medium" style={{ background: 'rgba(245,158,11,0.1)', color: '#f59e0b' }}>Meeting</span>
+                        )}
 
                         {assignee && <span className="badge badge-gray text-[9px]">{assignee}</span>}
 

@@ -132,6 +132,8 @@ export default function FirefliesPage() {
   const [showTranscript, setShowTranscript] = useState(false);
   const [transcriptLimit, setTranscriptLimit] = useState(50);
   const [dateRange, setDateRange] = useState<DateRange>({ from: '', to: '' });
+  const [extractedIds, setExtractedIds] = useState<Set<string>>(new Set());
+  const [extractResult, setExtractResult] = useState<string | null>(null);
 
   // --- Data Fetching ---
 
@@ -145,7 +147,7 @@ export default function FirefliesPage() {
       .then((r) => r.json())
       .then((d) => {
         if (d.error) {
-          setTranscriptsError(d.error);
+          setTranscriptsError(typeof d.error === 'string' ? d.error : JSON.stringify(d.error).slice(0, 200));
           setTranscripts([]);
         } else {
           setTranscripts(d.transcripts || []);
@@ -165,7 +167,7 @@ export default function FirefliesPage() {
       .then((r) => r.json())
       .then((d) => {
         if (d.error) {
-          setActionsError(d.error);
+          setActionsError(typeof d.error === 'string' ? d.error : JSON.stringify(d.error).slice(0, 200));
           setActions([]);
         } else {
           setActions(d.meetings || []);
@@ -195,6 +197,17 @@ export default function FirefliesPage() {
           fetch(`${API}/api/email/contacts`)
             .then((r) => r.json())
             .then((d) => setContacts((d.contacts || []).filter((c: Contact) => c.email)))
+            .catch(() => {});
+          // Auto-extract MOM from recent meetings
+          fetch(`${API}/api/fireflies/auto-extract?days=30&limit=15`, { method: 'POST' })
+            .then((r) => r.json())
+            .then((d) => {
+              if (d.extracted_transcript_ids) setExtractedIds(new Set(d.extracted_transcript_ids));
+              if (d.processed > 0) {
+                setExtractResult(`Auto-extracted ${d.processed} meeting(s) into follow-ups`);
+                setTimeout(() => setExtractResult(null), 5000);
+              }
+            })
             .catch(() => {});
         } else {
           setTranscriptsLoading(false);
@@ -250,7 +263,7 @@ export default function FirefliesPage() {
       const res = await fetch(`${API}/api/fireflies/intelligence/${transcriptId}`);
       const data = await res.json();
       if (data.error) {
-        setIntelligenceError(data.error);
+        setIntelligenceError(typeof data.error === 'string' ? data.error : JSON.stringify(data.error).slice(0, 200));
         setIntelligence(null);
       } else {
         // Check if result has any meaningful content
@@ -280,7 +293,7 @@ export default function FirefliesPage() {
       const res = await fetch(`${API}/api/fireflies/search?keyword=${encodeURIComponent(searchQuery)}&limit=10`);
       const data = await res.json();
       if (data.error) {
-        setSendResult(`Search failed: ${data.error}`);
+        setSendResult(`Search failed: ${typeof data.error === 'string' ? data.error : 'API error'}`);
         setSearchResults([]);
       } else {
         setSearchResults(data.results || []);
@@ -304,7 +317,7 @@ export default function FirefliesPage() {
         }),
       });
       const data = await res.json();
-      setSendResult(data.success ? (data.result || 'Sent via OpenClaw') : `Failed: ${data.error}`);
+      setSendResult(data.success ? (data.result || 'Sent via OpenClaw') : `Failed: ${typeof data.error === 'string' ? data.error : 'API error'}`);
     } catch {
       setSendResult('Failed to connect');
     } finally {
@@ -326,7 +339,7 @@ export default function FirefliesPage() {
         }),
       });
       const data = await res.json();
-      setSendResult(data.success ? (data.result || 'Sent via OpenClaw') : `Failed: ${data.error}`);
+      setSendResult(data.success ? (data.result || 'Sent via OpenClaw') : `Failed: ${typeof data.error === 'string' ? data.error : 'API error'}`);
     } catch {
       setSendResult('Failed to connect');
     } finally {
@@ -560,7 +573,12 @@ export default function FirefliesPage() {
                           className={`w-full text-left card p-4 transition-all ${selected?.id === t.id ? 'border-indigo-500/40' : ''}`}>
                           <div className="flex items-start justify-between">
                             <div className="flex-1 min-w-0">
-                              <h4 className="text-[13px] font-medium" style={{ color: '#e5e7eb' }}>{t.title}</h4>
+                              <h4 className="text-[13px] font-medium" style={{ color: '#e5e7eb' }}>
+                                {t.title}
+                                {extractedIds.has(t.id) && (
+                                  <span className="ml-2 text-[9px] px-1.5 py-0.5 rounded font-medium" style={{ background: 'rgba(34,197,94,0.1)', color: '#4ade80' }}>Extracted</span>
+                                )}
+                              </h4>
                               <div className="flex items-center gap-3 mt-1.5">
                                 <span className="text-[11px] font-mono" style={{ color: '#818cf8' }}>{t.duration_mins}m</span>
                                 <span className="text-[11px]" style={{ color: '#4b5563' }}>{t.host}</span>
@@ -643,7 +661,12 @@ export default function FirefliesPage() {
                   className={`w-full text-left card p-4 transition-all ${selected?.id === t.id ? 'border-indigo-500/40' : ''}`}>
                   <div className="flex items-start justify-between">
                     <div className="flex-1 min-w-0">
-                      <h4 className="text-[13px] font-medium" style={{ color: '#e5e7eb' }}>{t.title}</h4>
+                      <h4 className="text-[13px] font-medium" style={{ color: '#e5e7eb' }}>
+                        {t.title}
+                        {extractedIds.has(t.id) && (
+                          <span className="ml-2 text-[9px] px-1.5 py-0.5 rounded font-medium" style={{ background: 'rgba(34,197,94,0.1)', color: '#4ade80' }}>Extracted</span>
+                        )}
+                      </h4>
                       <div className="flex items-center gap-3 mt-1">
                         <span className="text-[11px]" style={{ color: '#6b7280' }}>{t.date}</span>
                         <span className="text-[11px] font-mono" style={{ color: '#818cf8' }}>{t.duration_mins}m</span>
@@ -775,7 +798,12 @@ export default function FirefliesPage() {
                       className={`w-full text-left card p-4 transition-all ${selected?.id === t.id ? 'border-indigo-500/40' : ''}`}>
                       <div className="flex items-start justify-between">
                         <div className="flex-1 min-w-0">
-                          <h4 className="text-[13px] font-medium" style={{ color: '#e5e7eb' }}>{t.title}</h4>
+                          <h4 className="text-[13px] font-medium" style={{ color: '#e5e7eb' }}>
+                        {t.title}
+                        {extractedIds.has(t.id) && (
+                          <span className="ml-2 text-[9px] px-1.5 py-0.5 rounded font-medium" style={{ background: 'rgba(34,197,94,0.1)', color: '#4ade80' }}>Extracted</span>
+                        )}
+                      </h4>
                           <div className="flex items-center gap-3 mt-1">
                             <span className="text-[11px]" style={{ color: '#6b7280' }}>{t.date}</span>
                             <span className="text-[11px] font-mono" style={{ color: '#818cf8' }}>{t.duration_mins}m</span>
@@ -1089,6 +1117,12 @@ export default function FirefliesPage() {
         </div>
       </div>
 
+      {extractResult && (
+        <div className="toast">
+          {extractResult}
+          <button onClick={() => setExtractResult(null)} className="ml-3 opacity-60 hover:opacity-100">x</button>
+        </div>
+      )}
       {sendResult && (
         <div className={`toast ${sendResult.includes('Failed') ? '!bg-red-600' : ''}`}>
           {sendResult}

@@ -22,7 +22,9 @@ class FollowupCreate(BaseModel):
     due: Optional[date] = None
     priority: Optional[str] = "P2"
     source: Optional[str] = None
+    source_id: Optional[str] = None
     notes: Optional[str] = None
+    checklist: Optional[list[dict]] = None
 
 
 class FollowupUpdate(BaseModel):
@@ -32,6 +34,7 @@ class FollowupUpdate(BaseModel):
     priority: Optional[str] = None
     status: Optional[str] = None
     notes: Optional[str] = None
+    checklist: Optional[list[dict]] = None
 
 
 class FollowupOut(BaseModel):
@@ -43,7 +46,9 @@ class FollowupOut(BaseModel):
     priority: Optional[str] = None
     status: str
     source: Optional[str] = None
+    source_id: Optional[str] = None
     notes: Optional[str] = None
+    checklist: Optional[list[dict]] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     resolved_at: Optional[datetime] = None

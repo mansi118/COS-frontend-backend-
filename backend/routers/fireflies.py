@@ -4,11 +4,15 @@ import json
 import os
 import re
 import urllib.request
+from datetime import datetime, timedelta
 from typing import Optional
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
+from database import get_db
 from routers.email import send_email
 import cos_reader
+import standup_fanout
 
 router = APIRouter(prefix="/api/fireflies", tags=["fireflies"])
 
@@ -197,6 +201,69 @@ def search_transcripts(keyword: str = Query(...), limit: int = Query(10, le=50))
             for t in data.get("transcripts", [])
         ],
         "keyword": keyword,
+    }
+
+
+# --- Auto-extract MOM → Follow-ups ---
+
+@router.post("/auto-extract")
+def auto_extract_mom(
+    days: int = Query(7, le=90),
+    limit: int = Query(10, le=20),
+    db: Session = Depends(get_db),
+):
+    """Auto-extract action items from recent Fireflies transcripts into follow-ups.
+    Idempotent — skips transcripts that have already been processed."""
+    if not API_KEY:
+        return {"error": "FIREFLIES_API_KEY not configured", "processed": 0}
+
+    from_date = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%dT00:00:00Z")
+
+    query = """
+    query Transcripts($limit: Int, $fromDate: DateTime) {
+      transcripts(limit: $limit, fromDate: $fromDate) {
+        id title dateString
+        summary { action_items }
+      }
+    }
+    """
+    data = _graphql(query, {"limit": limit, "fromDate": from_date})
+    if "error" in data:
+        return {"error": data["error"], "processed": 0}
+
+    transcripts = data.get("transcripts", [])
+    created = []
+    skipped = 0
+
+    for t in transcripts:
+        transcript_id = t.get("id", "")
+        action_items = _to_lines((t.get("summary") or {}).get("action_items"))
+        if not action_items:
+            skipped += 1
+            continue
+
+        fu_id = standup_fanout.create_followups_from_meeting(
+            transcript_id=transcript_id,
+            action_items=action_items,
+            title=t.get("title", "Untitled"),
+            meeting_date=t.get("dateString", ""),
+            db=db,
+        )
+        if fu_id:
+            created.append({"fu_id": fu_id, "transcript_id": transcript_id, "title": t.get("title"), "items": len(action_items)})
+        else:
+            skipped += 1
+
+    # Collect ALL extracted transcript IDs (both new and previously extracted)
+    all_fus = cos_reader.get_all_followups()
+    extracted_ids = [f.get("source_id") for f in all_fus if f.get("source") == "meeting" and f.get("source_id")]
+
+    return {
+        "processed": len(created),
+        "skipped": skipped,
+        "total_transcripts": len(transcripts),
+        "created_followups": created,
+        "extracted_transcript_ids": extracted_ids,
     }
 
 

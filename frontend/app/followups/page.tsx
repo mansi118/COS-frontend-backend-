@@ -6,6 +6,12 @@ import useWebSocket from '@/components/useWebSocket';
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
+interface ChecklistItem {
+  text: string;
+  priority: string;
+  completed: boolean;
+}
+
 interface Followup {
   id: number;
   fu_id: string;
@@ -14,6 +20,9 @@ interface Followup {
   due: string | null;
   priority: string | null;
   status: string;
+  source?: string | null;
+  source_id?: string | null;
+  checklist?: ChecklistItem[] | null;
 }
 
 interface Task {
@@ -31,6 +40,7 @@ export default function FollowupsPage() {
   const [view, setView] = useState<'kanban' | 'list'>('kanban');
   const [filterWho, setFilterWho] = useState('');
   const [filterPriority, setFilterPriority] = useState('');
+  const [filterSource, setFilterSource] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [newFu, setNewFu] = useState({ what: '', who: '', due: '', priority: 'P2', source: '' });
   const { lastMessage } = useWebSocket();
@@ -50,6 +60,11 @@ export default function FollowupsPage() {
 
   const resolve = async (id: number) => {
     await fetch(`${API}/api/followups/${id}/resolve`, { method: 'PUT' });
+    load();
+  };
+
+  const toggleItem = async (fuId: string, itemIndex: number) => {
+    await fetch(`${API}/api/followups/${fuId}/checklist/${itemIndex}/toggle`, { method: 'PUT' });
     load();
   };
 
@@ -73,6 +88,7 @@ export default function FollowupsPage() {
   const filtered = followups.filter((f) => {
     if (filterWho && f.who !== filterWho) return false;
     if (filterPriority && f.priority !== filterPriority) return false;
+    if (filterSource && f.source !== filterSource) return false;
     return true;
   });
 
@@ -114,9 +130,16 @@ export default function FollowupsPage() {
         </select>
         <select value={filterPriority} onChange={(e) => setFilterPriority(e.target.value)} className="text-[12px]">
           <option value="">All Priorities</option>
+          <option value="P0">P0</option>
           <option value="P1">P1</option>
           <option value="P2">P2</option>
           <option value="P3">P3</option>
+        </select>
+        <select value={filterSource} onChange={(e) => setFilterSource(e.target.value)} className="text-[12px]">
+          <option value="">All Sources</option>
+          <option value="standup">Standup</option>
+          <option value="meeting">Meeting</option>
+          <option value="manual">Manual</option>
         </select>
       </div>
 
@@ -159,14 +182,14 @@ export default function FollowupsPage() {
                 <span className="text-[11px] text-gray-600 font-medium">{col.items.length}</span>
               </div>
               <div className="space-y-2">
-                {col.items.map((f) => <FollowupCard key={f.id} {...f} onResolve={col.title !== 'Resolved' ? resolve : undefined} />)}
+                {col.items.map((f) => <FollowupCard key={f.id} {...f} onResolve={col.title !== 'Resolved' ? resolve : undefined} onToggleItem={toggleItem} />)}
               </div>
             </div>
           ))}
         </div>
       ) : (
         <div className="space-y-2">
-          {filtered.map((f) => <FollowupCard key={f.id} {...f} onResolve={resolve} />)}
+          {filtered.map((f) => <FollowupCard key={f.id} {...f} onResolve={resolve} onToggleItem={toggleItem} />)}
         </div>
       )}
 

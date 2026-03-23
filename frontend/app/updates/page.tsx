@@ -4,11 +4,14 @@ import { useEffect, useState } from 'react';
 import useWebSocket from '@/components/useWebSocket';
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const EXECUTE_URL = `${API}/api/execute`;
 
 interface Standup {
   person: string; name: string; date: string;
   done: string; doing: string; blockers: string | null;
   mood: string; highlights: string[];
+  linked_tasks?: string[];
+  doing_priorities?: Record<string, string>;
   created_at: string; updated_at: string;
 }
 interface Stats {
@@ -16,6 +19,40 @@ interface Stats {
   total_team: number; team_mood: string; blockers_count: number; is_weekend: boolean;
   streaks: Record<string, number>;
 }
+interface Suggestion {
+  fu_id: string; fu_what: string; matched_item: string;
+  done_text: string; match_score: number; item_index: number;
+}
+
+const PRIORITY_KEYWORDS: Record<string, string[]> = {
+  P0: ['blocker', 'blocked', 'urgent', 'critical'],
+  P1: ['bug', 'hotfix', 'fix', 'broken', 'crash'],
+  P2: ['review', 'pr', 'feature', 'build', 'implement', 'ship', 'deploy'],
+  P3: ['research', 'explore', 'investigate', 'spike', 'prototype'],
+};
+const classifyPriority = (text: string): string => {
+  const lower = text.toLowerCase();
+  for (const [p, keywords] of Object.entries(PRIORITY_KEYWORDS)) {
+    if (keywords.some((kw) => lower.includes(kw))) return p;
+  }
+  return 'P2';
+};
+const parseDoingItems = (doing: string): string[] => {
+  if (!doing) return [];
+  const lines = doing.split('\n').map((l) => l.replace(/^[\s\-\*•\d\.]+/, '').trim()).filter((l) => l && !['none', 'nothing', 'n/a', 'nothing specified'].includes(l.toLowerCase()));
+  if (lines.length <= 1 && lines[0]) {
+    const sentences = lines[0].split(/\.\s+/).map((s) => s.trim()).filter(Boolean);
+    if (sentences.length > 1) return sentences.map((s) => s.replace(/\.$/, ''));
+  }
+  return lines;
+};
+
+const priorityColors: Record<string, { bg: string; color: string }> = {
+  P0: { bg: 'rgba(239,68,68,0.15)', color: '#f87171' },
+  P1: { bg: 'rgba(249,115,22,0.12)', color: '#fb923c' },
+  P2: { bg: 'rgba(99,102,241,0.12)', color: '#818cf8' },
+  P3: { bg: 'rgba(156,163,175,0.1)', color: '#9ca3af' },
+};
 
 const moodCfg: Record<string, { emoji: string; color: string; bg: string }> = {
   great:      { emoji: '🟢', color: '#4ade80', bg: 'rgba(34,197,94,0.08)' },
@@ -30,11 +67,15 @@ export default function UpdatesPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [dateView, setDateView] = useState('today');
   const [showPost, setShowPost] = useState(false);
-  const [sending, setSending] = useState(false);
+  const [posting, setPosting] = useState(false);
+  const [reminding, setReminding] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   const [expandedPerson, setExpandedPerson] = useState<string | null>(null);
   const [personHistory, setPersonHistory] = useState<Standup[]>([]);
   const [newStandup, setNewStandup] = useState({ person: '', done: '', doing: '', blockers: '', mood: 'good' });
+  const [gatewayConnected, setGatewayConnected] = useState<boolean | null>(null);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [resolvingIdx, setResolvingIdx] = useState<number | null>(null);
   const { lastMessage } = useWebSocket();
 
   const getDateParam = () => {
@@ -55,31 +96,81 @@ export default function UpdatesPage() {
 
   useEffect(() => { load(); }, [dateView]);
   useEffect(() => { if (lastMessage?.type === 'standup_update') load(); }, [lastMessage]);
+  useEffect(() => {
+    fetch(`${API}/api/gateway/status`)
+      .then((r) => r.json())
+      .then((d) => setGatewayConnected(d.connected === true))
+      .catch(() => setGatewayConnected(false));
+  }, []);
 
   const postUpdate = async () => {
     if (!newStandup.person || !newStandup.done) return;
-    setSending(true);
+    setPosting(true);
+    const postedPerson = newStandup.person;
     try {
-      await fetch(`${API}/api/standups`, {
+      const res = await fetch(EXECUTE_URL, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...newStandup, blockers: newStandup.blockers || null }),
+        body: JSON.stringify({
+          action: 'post_standup',
+          args: {
+            person: newStandup.person,
+            done: newStandup.done,
+            doing: newStandup.doing || 'Nothing specified',
+            blockers: newStandup.blockers || 'None',
+            mood: newStandup.mood,
+          },
+        }),
       });
-      setShowPost(false);
-      setNewStandup({ person: '', done: '', doing: '', blockers: '', mood: 'good' });
-      setResult('Standup posted!');
-      load();
-    } catch { setResult('Failed to post'); }
-    finally { setSending(false); setTimeout(() => setResult(null), 3000); }
+      const data = await res.json();
+      if (data.success) {
+        setShowPost(false);
+        setNewStandup({ person: '', done: '', doing: '', blockers: '', mood: 'good' });
+        setResult('Standup posted via OpenClaw');
+        load();
+        // Fetch suggestions for the posted person
+        fetch(`${API}/api/standups/suggestions/${postedPerson}`)
+          .then((r) => r.json())
+          .then((d) => { if (d.suggestions?.length > 0) setSuggestions(d.suggestions); })
+          .catch(() => {});
+      } else {
+        setResult(`Failed: ${data.error}`);
+      }
+    } catch { setResult('Failed to connect to gateway'); }
+    finally { setPosting(false); setTimeout(() => setResult(null), 4000); }
   };
 
   const sendReminder = async () => {
-    setSending(true);
+    setReminding(true);
     try {
-      const res = await fetch(`${API}/api/standups/remind`, { method: 'POST' });
+      const res = await fetch(EXECUTE_URL, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'send_standup_reminder', args: {} }),
+      });
       const d = await res.json();
-      setResult(d.status === 'sent' ? `Reminders sent to ${d.missing_count} people` : d.reason || d.status);
-    } catch { setResult('Failed'); }
-    finally { setSending(false); setTimeout(() => setResult(null), 4000); }
+      setResult(d.success ? (d.result || 'Reminders sent via OpenClaw') : `Failed: ${d.error}`);
+    } catch { setResult('Failed to connect to gateway'); }
+    finally { setReminding(false); setTimeout(() => setResult(null), 4000); }
+  };
+
+  const resolveSuggestion = async (suggestion: Suggestion, idx: number) => {
+    setResolvingIdx(idx);
+    try {
+      await fetch(`${API}/api/standups/resolve-suggestion`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fu_id: suggestion.fu_id, item_index: suggestion.item_index }),
+      });
+      setSuggestions((prev) => prev.filter((_, i) => i !== idx));
+      load();
+    } catch { /* ignore */ }
+    finally { setResolvingIdx(null); }
+  };
+
+  const updatePriority = async (person: string, itemIndex: number, newPriority: string) => {
+    await fetch(`${API}/api/standups/${person}/priorities`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ priorities: { [itemIndex]: newPriority } }),
+    });
+    load();
   };
 
   const loadHistory = async (person: string) => {
@@ -104,7 +195,20 @@ export default function UpdatesPage() {
             Team standup board — {stats ? `${stats.posted_count}/${stats.total_team} posted` : 'loading...'}
           </p>
         </div>
-        <button onClick={() => setShowPost(true)} className="btn btn-primary text-[12px]">+ Post Update</button>
+        <div className="flex items-center gap-3">
+          {gatewayConnected !== null && (
+            <div className="flex items-center gap-1.5">
+              <span
+                className={`w-2 h-2 rounded-full ${gatewayConnected ? 'bg-emerald-400' : 'bg-red-400'}`}
+                style={{ boxShadow: gatewayConnected ? '0 0 6px rgba(52,211,153,0.5)' : '0 0 6px rgba(248,113,113,0.5)' }}
+              />
+              <span className={`text-[10px] font-medium ${gatewayConnected ? 'text-emerald-400/80' : 'text-red-400/80'}`}>
+                {gatewayConnected ? 'via OpenClaw' : 'gateway offline'}
+              </span>
+            </div>
+          )}
+          <button onClick={() => setShowPost(true)} className="btn btn-primary text-[12px]">+ Post Update</button>
+        </div>
       </div>
 
       {/* Date nav + actions */}
@@ -119,11 +223,48 @@ export default function UpdatesPage() {
           ))}
         </div>
         {stats && stats.missing_count > 0 && !stats.is_weekend && (
-          <button onClick={sendReminder} disabled={sending} className="btn btn-secondary text-[11px] py-1.5 disabled:opacity-40">
-            {sending ? '...' : `Send Reminder (${stats.missing_count})`}
+          <button onClick={sendReminder} disabled={reminding} className="btn btn-secondary text-[11px] py-1.5 disabled:opacity-40">
+            {reminding ? '...' : `Send Reminder (${stats.missing_count})`}
           </button>
         )}
       </div>
+
+      {/* Resolve suggestions panel */}
+      {suggestions.length > 0 && (
+        <div className="card p-5" style={{ borderColor: 'rgba(99,102,241,0.2)', background: 'rgba(99,102,241,0.04)' }}>
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h3 className="text-sm font-semibold" style={{ color: '#e5e7eb' }}>Looks like you completed these</h3>
+              <p className="text-[11px] mt-0.5" style={{ color: '#6b7280' }}>Confirm to mark checklist items as done</p>
+            </div>
+            <button onClick={() => setSuggestions([])} className="text-[11px]" style={{ color: '#6b7280' }}>Dismiss all</button>
+          </div>
+          <div className="space-y-2">
+            {suggestions.map((s, i) => (
+              <div key={i} className="flex items-center justify-between p-3 rounded-lg" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                <div className="flex-1 min-w-0 mr-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[9px] font-mono px-1.5 py-0.5 rounded" style={{ background: 'rgba(99,102,241,0.1)', color: '#818cf8' }}>{s.fu_id}</span>
+                    <span className="text-[11px]" style={{ color: '#d1d5db' }}>{s.matched_item}</span>
+                  </div>
+                  <p className="text-[10px] mt-1" style={{ color: '#6b7280' }}>
+                    You said: &quot;{s.done_text}&quot; — {Math.round(s.match_score * 100)}% match
+                  </p>
+                </div>
+                <div className="flex gap-1.5 shrink-0">
+                  <button onClick={() => setSuggestions((prev) => prev.filter((_, j) => j !== i))}
+                    className="text-[10px] px-2 py-1 rounded" style={{ color: '#6b7280' }}>Skip</button>
+                  <button onClick={() => resolveSuggestion(s, i)} disabled={resolvingIdx === i}
+                    className="text-[10px] px-2.5 py-1 rounded font-medium disabled:opacity-40"
+                    style={{ background: 'rgba(34,197,94,0.15)', color: '#4ade80' }}>
+                    {resolvingIdx === i ? '...' : 'Resolve'}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Missing alert */}
       {stats && stats.missing_count > 0 && !stats.is_weekend && (
@@ -131,7 +272,7 @@ export default function UpdatesPage() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-[12px] font-medium" style={{ color: '#facc15' }}>
-                ⚠️ Missing today: {stats.missing.join(', ')}
+                Missing today: {stats.missing.join(', ')}
               </p>
             </div>
             {stats.blockers_count > 0 && (
@@ -143,7 +284,7 @@ export default function UpdatesPage() {
 
       {stats && stats.posted_count === stats.total_team && stats.total_team > 0 && (
         <div className="card p-3 text-center" style={{ borderColor: 'rgba(34,197,94,0.2)', background: 'rgba(34,197,94,0.05)' }}>
-          <p className="text-[12px] font-medium" style={{ color: '#4ade80' }}>✅ All {stats.total_team} team members have posted</p>
+          <p className="text-[12px] font-medium" style={{ color: '#4ade80' }}>All {stats.total_team} team members have posted</p>
         </div>
       )}
 
@@ -153,6 +294,9 @@ export default function UpdatesPage() {
           {standups.map((s) => {
             const mood = moodCfg[s.mood] || moodCfg.neutral;
             const streak = stats?.streaks?.[s.person] || 0;
+            const doingItems = parseDoingItems(s.doing);
+            const linkedFUs = (s.linked_tasks || []).filter((id) => id.startsWith('FU-'));
+            const linkedTasks = (s.linked_tasks || []).filter((id) => id.startsWith('TF-'));
             return (
               <div key={s.person} className="card p-0 overflow-hidden cursor-pointer" onClick={() => loadHistory(s.person)}>
                 {/* Header with mood */}
@@ -178,8 +322,43 @@ export default function UpdatesPage() {
                   </div>
                   {s.doing && (
                     <div>
-                      <p className="text-[10px] font-semibold uppercase tracking-wider mb-1" style={{ color: '#818cf8' }}>Doing</p>
-                      <p className="text-[12px] leading-relaxed" style={{ color: '#d1d5db' }}>{s.doing}</p>
+                      <p className="text-[10px] font-semibold uppercase tracking-wider mb-1.5" style={{ color: '#818cf8' }}>Doing</p>
+                      <div className="space-y-1">
+                        {doingItems.map((item, idx) => {
+                          const pri = s.doing_priorities?.[String(idx)] || classifyPriority(item);
+                          const pc = priorityColors[pri] || priorityColors.P2;
+                          return (
+                            <div key={idx} className="flex items-start gap-2">
+                              <select
+                                value={pri}
+                                onChange={(e) => { e.stopPropagation(); updatePriority(s.person, idx, e.target.value); }}
+                                onClick={(e) => e.stopPropagation()}
+                                className="text-[9px] font-medium rounded px-1 py-0.5 shrink-0 cursor-pointer border-0"
+                                style={{ background: pc.bg, color: pc.color, appearance: 'none', WebkitAppearance: 'none', width: '28px', textAlign: 'center' }}
+                              >
+                                {['P0', 'P1', 'P2', 'P3'].map((p) => <option key={p} value={p}>{p}</option>)}
+                              </select>
+                              <p className="text-[12px] leading-relaxed" style={{ color: '#d1d5db' }}>{item}</p>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {/* Linked FU/Task badges */}
+                      {(linkedFUs.length > 0 || linkedTasks.length > 0) && (
+                        <div className="flex flex-wrap gap-1 mt-2">
+                          {linkedFUs.map((id) => (
+                            <a key={id} href="/followups" onClick={(e) => e.stopPropagation()}
+                              className="text-[9px] font-mono px-1.5 py-0.5 rounded transition-opacity hover:opacity-80"
+                              style={{ background: 'rgba(99,102,241,0.1)', color: '#818cf8' }}>{id}</a>
+                          ))}
+                          {linkedTasks.map((id) => (
+                            <a key={id} href="/taskflow" onClick={(e) => e.stopPropagation()}
+                              className="text-[9px] font-mono px-1.5 py-0.5 rounded transition-opacity hover:opacity-80"
+                              style={{ background: 'rgba(245,158,11,0.1)', color: '#f59e0b' }}>{id}</a>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                   {s.blockers && (
@@ -278,11 +457,17 @@ export default function UpdatesPage() {
               </div>
             </div>
 
+            {gatewayConnected === false && (
+              <p className="text-[11px] mt-2" style={{ color: '#f87171' }}>
+                OpenClaw gateway is offline. Posting is temporarily unavailable.
+              </p>
+            )}
+
             <div className="flex justify-end gap-2 mt-5">
               <button onClick={() => setShowPost(false)} className="btn btn-secondary text-[12px]">Cancel</button>
-              <button onClick={postUpdate} disabled={sending || !newStandup.person || !newStandup.done}
+              <button onClick={postUpdate} disabled={posting || !newStandup.person || !newStandup.done || gatewayConnected === false}
                 className="btn btn-primary text-[12px] disabled:opacity-40">
-                {sending ? 'Posting...' : 'Post Update'}
+                {posting ? 'Posting via OpenClaw...' : 'Post Update'}
               </button>
             </div>
           </div>

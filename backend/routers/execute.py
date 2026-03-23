@@ -71,6 +71,21 @@ ACTION_MAP = {
         "notable quotes with speaker names, and provide a 2-3 sentence executive summary. "
         "Return as a JSON object."
     ),
+    "post_standup": (
+        "Post a daily standup update for {person}. "
+        "What they accomplished: {done}. "
+        "What they are working on: {doing}. "
+        "Blockers: {blockers}. "
+        "Mood: {mood}."
+    ),
+    "update_standup": (
+        "Update today's standup for {person}. "
+        "Changes: done={done}, doing={doing}, blockers={blockers}, mood={mood}."
+    ),
+    "send_standup_reminder": (
+        "Send standup reminders to all team members who haven't posted their daily update yet. "
+        "Use Slack DMs and WhatsApp where available."
+    ),
 }
 
 
@@ -92,9 +107,12 @@ async def execute_action(req: ExecuteRequest):
             "available_actions": list(ACTION_MAP.keys()),
         }
 
-    # Build the instruction from template + args
+    # Build the instruction from template + args (escape braces in user text)
     try:
-        instruction = template.format(**(req.args or {}))
+        safe_args = {}
+        for k, v in (req.args or {}).items():
+            safe_args[k] = str(v).replace("{", "{{").replace("}", "}}") if isinstance(v, str) else v
+        instruction = template.format(**safe_args)
     except KeyError as e:
         return {"success": False, "error": f"Missing required arg: {e}"}
 
