@@ -95,6 +95,15 @@ ACTION_MAP = {
     "sprint_close": (
         "Close the current sprint and archive it."
     ),
+    "create_task": (
+        "Create a new task: {title}. Assign to {owner}, priority {priority}."
+    ),
+    "edit_task": (
+        "Update task {task_id}. Set: title={title}, owner={owner}, priority={priority}."
+    ),
+    "delete_task": (
+        "Delete task {task_id} permanently."
+    ),
     "toggle_checklist_item": (
         "Toggle checklist item {item_index} on follow-up {fu_id}. "
         "If unchecked, mark as completed. If checked, uncheck it. "

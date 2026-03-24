@@ -268,6 +268,28 @@ def uncomplete_task(task_id: str) -> Optional[dict]:
     return task
 
 
+def toggle_task_checklist(task_id: str, item_index: int) -> Optional[dict]:
+    """Toggle a checklist item on a task. Auto-complete if all done, reopen if unchecked."""
+    task = get_task(task_id)
+    if not task:
+        return None
+    items = task.get("checklist_items") or []
+    if item_index < 0 or item_index >= len(items):
+        return None
+    items[item_index]["is_completed"] = not items[item_index].get("is_completed", False)
+    task["checklist_items"] = items
+    task["updated"] = datetime.utcnow().isoformat()
+    # Auto-complete if all items done
+    if all(ci.get("is_completed") for ci in items):
+        task["status"] = "completed"
+        task["completed_at"] = datetime.utcnow().isoformat()
+    elif task.get("status") == "completed":
+        task["status"] = "active"
+        task["completed_at"] = None
+    _write_json(os.path.join(TASKS_DIR, f"{task_id}.json"), task)
+    return task
+
+
 def trash_task(task_id: str) -> Optional[dict]:
     task = get_task(task_id)
     if not task:

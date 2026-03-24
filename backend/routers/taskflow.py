@@ -56,6 +56,19 @@ class ProjectCreate(BaseModel):
     deadline: Optional[str] = None
 
 
+# Resolve slugs to full names
+_roster = cos_reader.get_team_roster() or []
+_roster_map = {r["slug"]: r for r in _roster}
+
+
+def _enrich_tasks(tasks: list) -> list:
+    """Add who_name to each task from roster."""
+    for t in tasks:
+        owner = t.get("owner") or t.get("assigned_to") or ""
+        t["who_name"] = _roster_map.get(owner, {}).get("name", owner) if owner else None
+    return tasks
+
+
 # --- Task endpoints ---
 
 @router.get("/tasks")
@@ -64,9 +77,9 @@ def list_tasks(view: str = Query("today")):
         data = taskflow_client.list_tasks(view=view)
         if data is not None:
             tasks = data.get("tasks", data) if isinstance(data, dict) else data
-            return {"tasks": tasks if isinstance(tasks, list) else [], "view": view, "source": "api"}
+            return {"tasks": _enrich_tasks(tasks if isinstance(tasks, list) else []), "view": view, "source": "api"}
     tasks = taskflow_local.list_tasks(view=view)
-    return {"tasks": tasks, "view": view, "count": len(tasks), "source": "local"}
+    return {"tasks": _enrich_tasks(tasks), "view": view, "count": len(tasks), "source": "local"}
 
 
 @router.get("/tasks/{task_id}")
@@ -89,6 +102,15 @@ def create_task(data: TaskCreate):
             return result
     task = taskflow_local.create_task(data.model_dump(exclude_unset=True))
     return {"task_id": task["id"], "task": task}
+
+
+@router.put("/tasks/{task_id}/checklist/{item_index}/toggle")
+def toggle_task_checklist_item(task_id: str, item_index: int):
+    """Toggle a checklist item. Auto-completes task if all done, reopens if unchecked."""
+    result = taskflow_local.toggle_task_checklist(task_id, item_index)
+    if not result:
+        return {"error": "Task or item not found"}
+    return {"task": result}
 
 
 @router.put("/tasks/{task_id}")

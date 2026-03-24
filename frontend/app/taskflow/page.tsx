@@ -4,6 +4,28 @@ import { useEffect, useState } from 'react';
 import useWebSocket from '@/components/useWebSocket';
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const EXECUTE_URL = `${API}/api/execute`;
+
+const AVATAR_COLORS = ['#818cf8', '#f472b6', '#34d399', '#fbbf24', '#fb923c', '#a78bfa', '#22d3ee', '#f87171'];
+function getAvatarColor(name: string): string {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+}
+function getInitials(name: string): string {
+  const parts = name.trim().split(/\s+/);
+  if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  return name.slice(0, 2).toUpperCase();
+}
+
+const statusColors: Record<string, { bg: string; color: string }> = {
+  active: { bg: 'rgba(156,163,175,0.12)', color: '#9ca3af' },
+  inbox: { bg: 'rgba(234,179,8,0.12)', color: '#facc15' },
+  in_progress: { bg: 'rgba(99,102,241,0.12)', color: '#818cf8' },
+  blocked: { bg: 'rgba(239,68,68,0.12)', color: '#f87171' },
+  todo: { bg: 'rgba(234,179,8,0.12)', color: '#facc15' },
+  completed: { bg: 'rgba(34,197,94,0.12)', color: '#4ade80' },
+};
 
 interface Task {
   id: string;
@@ -17,6 +39,7 @@ interface Task {
   priority_hint?: string;
   assigned_to?: string;
   owner?: string;
+  who_name?: string | null;
   project_id?: string;
   project_name?: string;
   tags?: string[];
@@ -80,6 +103,12 @@ export default function TaskFlowPage() {
   const [notifyResult, setNotifyResult] = useState<string | null>(null);
   const [notifying, setNotifying] = useState(false);
   const [newTask, setNewTask] = useState({ title: '', notes: '', when_date: '', deadline: '', project_id: '', priority_hint: '', tags: '', owner: '' });
+  const [editTask, setEditTask] = useState<Task | null>(null);
+  const [editForm, setEditForm] = useState({ title: '', notes: '', owner: '', priority_hint: '', deadline: '' });
+  const [creating, setCreating] = useState(false);
+  const [gatewayConnected, setGatewayConnected] = useState<boolean | null>(null);
+  const [result, setResult] = useState<string | null>(null);
+  const [expandedTask, setExpandedTask] = useState<string | null>(null);
   const { lastMessage } = useWebSocket();
 
   const loadAnalytics = () => {
@@ -124,6 +153,11 @@ export default function TaskFlowPage() {
   };
 
   useEffect(() => { load(); }, [activeView]);
+  useEffect(() => {
+    fetch(`${API}/api/gateway/status`).then((r) => r.json())
+      .then((d) => setGatewayConnected(d.connected === true))
+      .catch(() => setGatewayConnected(false));
+  }, []);
 
   useEffect(() => {
     if (mainTab === 'analytics') loadAnalytics();
@@ -156,21 +190,70 @@ export default function TaskFlowPage() {
 
   const createTask = async () => {
     if (!newTask.title) return;
-    await fetch(`${API}/api/taskflow/tasks`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ...newTask,
-        when_date: newTask.when_date || null,
-        deadline: newTask.deadline || null,
-        project_id: newTask.project_id || null,
-        tags: newTask.tags ? newTask.tags.split(',').map((t) => t.trim()).filter(Boolean) : [],
-        owner: newTask.owner || null,
-      }),
-    });
-    setShowCreate(false);
-    setNewTask({ title: '', notes: '', when_date: '', deadline: '', project_id: '', priority_hint: '', tags: '', owner: '' });
+    setCreating(true);
+    try {
+      const res = await fetch(EXECUTE_URL, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'create_task',
+          args: { title: newTask.title, owner: newTask.owner || 'unassigned', priority: newTask.priority_hint || 'P2' },
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setShowCreate(false);
+        setNewTask({ title: '', notes: '', when_date: '', deadline: '', project_id: '', priority_hint: '', tags: '', owner: '' });
+        setResult('Task created via OpenClaw');
+        load();
+      } else {
+        setResult(`Failed: ${data.error}`);
+      }
+    } catch { setResult('Failed to connect to gateway'); }
+    finally { setCreating(false); setTimeout(() => setResult(null), 4000); }
+  };
+
+  const toggleChecklist = async (taskId: string, itemIndex: number) => {
+    await fetch(`${API}/api/taskflow/tasks/${taskId}/checklist/${itemIndex}/toggle`, { method: 'PUT' });
     load();
+  };
+
+  const changeStatus = async (taskId: string, newStatus: string) => {
+    await fetch(`${API}/api/taskflow/tasks/${taskId}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: newStatus }),
+    });
+    load();
+  };
+
+  const openEdit = (task: Task) => {
+    setEditTask(task);
+    setEditForm({
+      title: task.title || '',
+      notes: task.notes || '',
+      owner: task.owner || task.assigned_to || '',
+      priority_hint: task.priority || task.priority_hint || 'P2',
+      deadline: task.deadline || task.when_date || '',
+    });
+  };
+
+  const saveEdit = async () => {
+    if (!editTask) return;
+    try {
+      const res = await fetch(EXECUTE_URL, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'edit_task',
+          args: { task_id: editTask.id, title: editForm.title, owner: editForm.owner, priority: editForm.priority_hint },
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setEditTask(null);
+        setResult('Task updated via OpenClaw');
+        load();
+      } else { setResult(`Failed: ${data.error}`); }
+    } catch { setResult('Failed to connect'); }
+    finally { setTimeout(() => setResult(null), 4000); }
   };
 
   const today = new Date().toISOString().slice(0, 10);
@@ -195,7 +278,18 @@ export default function TaskFlowPage() {
             Task manager — {config?.mode === 'api' ? 'connected to TaskFlow API' : 'local mode'}
           </p>
         </div>
-        <button onClick={() => setShowCreate(true)} className="btn btn-primary text-[12px]">+ New Task</button>
+        <div className="flex items-center gap-3">
+          {gatewayConnected !== null && (
+            <div className="flex items-center gap-1.5">
+              <span className={`w-2 h-2 rounded-full ${gatewayConnected ? 'bg-emerald-400' : 'bg-red-400'}`}
+                style={{ boxShadow: gatewayConnected ? '0 0 6px rgba(52,211,153,0.5)' : '0 0 6px rgba(248,113,113,0.5)' }} />
+              <span className={`text-[10px] font-medium ${gatewayConnected ? 'text-emerald-400/80' : 'text-red-400/80'}`}>
+                {gatewayConnected ? 'via OpenClaw' : 'gateway offline'}
+              </span>
+            </div>
+          )}
+          <button onClick={() => setShowCreate(true)} className="btn btn-primary text-[12px]">+ New Task</button>
+        </div>
       </div>
 
       {/* Primary Tabs */}
@@ -259,12 +353,16 @@ export default function TaskFlowPage() {
               const completed = isCompleted(t);
               const trashed = isTrashed(t);
               const pri = getPriority(t);
-              const assignee = getAssignee(t);
-              const checklistTotal = (t.checklist_items || []).length;
-              const checklistDone = (t.checklist_items || []).filter((c) => c.is_completed).length;
+              const displayName = t.who_name || t.owner || t.assigned_to || '';
+              const ac = displayName ? getAvatarColor(displayName) : '#6b7280';
+              const checklistItems = t.checklist_items || [];
+              const checklistTotal = checklistItems.length;
+              const checklistDone = checklistItems.filter((c) => c.is_completed).length;
+              const isExpanded = expandedTask === t.id;
+              const sc = statusColors[t.status] || statusColors.active;
 
               return (
-                <div key={t.id} className={`card p-0 overflow-hidden ${overdue ? 'border-l-2 border-l-red-500/50' : ''}`}>
+                <div key={t.id} className={`card p-0 overflow-hidden ${overdue ? 'border-l-2 border-l-red-500/50' : completed ? 'opacity-60' : ''}`}>
                   <div className="flex items-start gap-3 px-4 py-3">
                     {/* Checkbox / Action */}
                     <div className="pt-0.5 shrink-0">
@@ -282,6 +380,10 @@ export default function TaskFlowPage() {
 
                     {/* Content */}
                     <div className="flex-1 min-w-0">
+                      {/* Employee name */}
+                      {displayName && (
+                        <p className="text-[11px] font-semibold mb-0.5" style={{ color: ac }}>{displayName}</p>
+                      )}
                       <p className={`text-[13px] leading-snug ${completed ? 'line-through' : ''}`}
                         style={{ color: completed ? '#4b5563' : '#e5e7eb' }}>
                         {t.title}
@@ -291,21 +393,15 @@ export default function TaskFlowPage() {
                         <span className="text-[9px] font-mono" style={{ color: '#4b5563' }}>{t.id}</span>
 
                         {t.source === 'standup' && (
-                          <span className="text-[9px] px-1.5 py-0.5 rounded font-medium" style={{ background: 'rgba(99,102,241,0.1)', color: '#818cf8' }}>Standup</span>
+                          <a href="/updates" className="text-[9px] px-1.5 py-0.5 rounded font-medium hover:opacity-80" style={{ background: 'rgba(99,102,241,0.1)', color: '#818cf8' }}>Standup</a>
                         )}
                         {t.source === 'meeting' && (
-                          <span className="text-[9px] px-1.5 py-0.5 rounded font-medium" style={{ background: 'rgba(245,158,11,0.1)', color: '#f59e0b' }}>Meeting</span>
+                          <a href="/fireflies" className="text-[9px] px-1.5 py-0.5 rounded font-medium hover:opacity-80" style={{ background: 'rgba(245,158,11,0.1)', color: '#f59e0b' }}>Meeting</a>
                         )}
-
-                        {assignee && <span className="badge badge-gray text-[9px]">{assignee}</span>}
 
                         {t.project_name && <span className="badge badge-purple text-[9px]">{t.project_name}</span>}
 
                         {pri && <span className={`text-[9px] px-1.5 py-0.5 rounded-md font-medium priority-${pri}`}>{pri}</span>}
-
-                        {t.status && t.status !== 'active' && t.status !== 'completed' && t.status !== 'trashed' && (
-                          <span className={`badge text-[9px] ${t.status === 'blocked' ? 'badge-red' : t.status === 'todo' ? 'badge-yellow' : 'badge-gray'}`}>{t.status}</span>
-                        )}
 
                         {(t.tags || [])
                           .filter((tag) => !tag.startsWith('standup') && !tag.startsWith('meeting') && !tag.match(/^\d{4}-/))
@@ -318,20 +414,96 @@ export default function TaskFlowPage() {
                             {overdue ? 'Overdue: ' : due === today ? 'Today' : ''}{due !== today ? due : ''}
                           </span>
                         )}
-
-                        {checklistTotal > 0 && (
-                          <span className="text-[10px]" style={{ color: checklistDone === checklistTotal ? '#4ade80' : '#6b7280' }}>
-                            {checklistDone}/{checklistTotal}
-                          </span>
-                        )}
                       </div>
+
+                      {/* Checklist progress + expandable */}
+                      {checklistTotal > 0 && (
+                        <div className="mt-2">
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.06)' }}>
+                              <div className="h-full rounded-full transition-all" style={{
+                                width: `${checklistTotal > 0 ? (checklistDone / checklistTotal) * 100 : 0}%`,
+                                background: checklistDone === checklistTotal ? '#4ade80' : '#818cf8',
+                              }} />
+                            </div>
+                            <button onClick={() => setExpandedTask(isExpanded ? null : t.id)}
+                              className="text-[10px] font-medium shrink-0 hover:opacity-80"
+                              style={{ color: checklistDone === checklistTotal ? '#4ade80' : '#9ca3af' }}>
+                              {checklistDone}/{checklistTotal} {isExpanded ? '▾' : '▸'}
+                            </button>
+                          </div>
+                          {isExpanded && (
+                            <div className="mt-2 rounded-lg overflow-hidden" style={{ border: '1px solid rgba(255,255,255,0.06)' }}>
+                              {checklistItems.filter(ci => !ci.is_completed).length > 0 && (
+                                <div>
+                                  <div className="px-3 py-1.5" style={{ background: 'rgba(255,255,255,0.02)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                                    <span className="text-[9px] font-semibold uppercase tracking-wider" style={{ color: '#6b7280' }}>
+                                      To Do ({checklistItems.filter(ci => !ci.is_completed).length})
+                                    </span>
+                                  </div>
+                                  {checklistItems.map((ci, idx) => !ci.is_completed && (
+                                    <div key={idx} onClick={() => toggleChecklist(t.id, idx)}
+                                      className="flex items-center gap-3 px-3 py-2.5 cursor-pointer hover:bg-indigo-500/[0.04] group"
+                                      style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
+                                      <div className="w-[18px] h-[18px] rounded border-2 shrink-0 group-hover:border-indigo-400/50 group-hover:bg-indigo-500/10"
+                                        style={{ borderColor: 'rgba(255,255,255,0.15)' }} />
+                                      <span className="text-[12px] flex-1" style={{ color: '#d1d5db' }}>{ci.title}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                              {checklistItems.filter(ci => ci.is_completed).length > 0 && (
+                                <div style={{ background: 'rgba(34,197,94,0.02)' }}>
+                                  <div className="px-3 py-1.5" style={{ background: 'rgba(34,197,94,0.04)', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                                    <span className="text-[9px] font-semibold uppercase tracking-wider" style={{ color: '#4ade80' }}>
+                                      Completed ({checklistItems.filter(ci => ci.is_completed).length})
+                                    </span>
+                                  </div>
+                                  {checklistItems.map((ci, idx) => ci.is_completed && (
+                                    <div key={idx} onClick={() => toggleChecklist(t.id, idx)}
+                                      className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-white/[0.03]"
+                                      style={{ borderBottom: '1px solid rgba(255,255,255,0.02)' }}>
+                                      <div className="w-[18px] h-[18px] rounded flex items-center justify-center shrink-0"
+                                        style={{ background: 'rgba(34,197,94,0.15)', border: '2px solid rgba(34,197,94,0.4)' }}>
+                                        <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                                          <path d="M2 5L4.5 7.5L8 3" stroke="#4ade80" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                                        </svg>
+                                      </div>
+                                      <span className="text-[12px] flex-1 line-through" style={{ color: '#4b5563' }}>{ci.title}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
 
-                    {/* Trash button */}
-                    {!trashed && !completed && (
-                      <button onClick={() => trashTask(t.id)} className="text-[11px] px-2 py-1 rounded transition-colors shrink-0"
-                        style={{ color: '#4b5563' }} title="Trash">⌫</button>
-                    )}
+                    {/* Actions: status + edit + trash */}
+                    <div className="flex items-center gap-1 shrink-0">
+                      {!trashed && (
+                        <select value={t.status}
+                          onChange={(e) => changeStatus(t.id, e.target.value)}
+                          className="text-[9px] font-semibold rounded-lg px-2 py-1 cursor-pointer outline-none"
+                          style={{ background: sc.bg, color: sc.color, border: `1px solid ${sc.color}30`, appearance: 'auto', WebkitAppearance: 'menulist', minWidth: '80px' }}>
+                          <option value="active">Active</option>
+                          <option value="in_progress">In Progress</option>
+                          <option value="blocked">Blocked</option>
+                          <option value="completed">Completed</option>
+                        </select>
+                      )}
+                      <button onClick={() => openEdit(t)} className="text-[11px] px-1.5 py-1 rounded hover:bg-white/[0.06]"
+                        style={{ color: '#6b7280' }} title="Edit">✎</button>
+                      {!trashed && !completed && (
+                        <button onClick={() => trashTask(t.id)} className="text-[11px] px-1.5 py-1 rounded hover:bg-red-500/10"
+                          style={{ color: '#6b7280' }} title="Trash">✕</button>
+                      )}
+                      {trashed && (
+                        <button onClick={() => restoreTask(t.id)} className="text-[11px] px-1.5 py-1 rounded hover:bg-white/[0.06]"
+                          style={{ color: '#818cf8' }} title="Restore">↩</button>
+                      )}
+                    </div>
                   </div>
                 </div>
               );
@@ -630,9 +802,62 @@ export default function TaskFlowPage() {
 
             <div className="flex justify-end gap-2 mt-5">
               <button onClick={() => setShowCreate(false)} className="btn btn-secondary text-[12px]">Cancel</button>
-              <button onClick={createTask} disabled={!newTask.title} className="btn btn-primary text-[12px] disabled:opacity-40">Create Task</button>
+              <button onClick={createTask} disabled={creating || !newTask.title} className="btn btn-primary text-[12px] disabled:opacity-40">
+                {creating ? 'Creating...' : 'Create Task'}
+              </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Edit Modal */}
+      {editTask && (
+        <div className="modal-overlay">
+          <div className="modal-panel p-6">
+            <h3 className="text-base font-semibold mb-1" style={{ color: '#e5e7eb' }}>Edit Task</h3>
+            <p className="text-[11px] mb-4" style={{ color: '#6b7280' }}>{editTask.id}</p>
+            <div className="space-y-3">
+              <div>
+                <label className="text-[11px] font-medium uppercase tracking-wider" style={{ color: '#6b7280' }}>Title *</label>
+                <input value={editForm.title} onChange={(e) => setEditForm({ ...editForm, title: e.target.value })} className="w-full mt-1" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[11px] font-medium uppercase tracking-wider" style={{ color: '#6b7280' }}>Assignee</label>
+                  <input value={editForm.owner} onChange={(e) => setEditForm({ ...editForm, owner: e.target.value })} className="w-full mt-1" />
+                </div>
+                <div>
+                  <label className="text-[11px] font-medium uppercase tracking-wider" style={{ color: '#6b7280' }}>Priority</label>
+                  <select value={editForm.priority_hint} onChange={(e) => setEditForm({ ...editForm, priority_hint: e.target.value })} className="w-full mt-1">
+                    <option value="P0">P0 — Critical</option>
+                    <option value="P1">P1 — High</option>
+                    <option value="P2">P2 — Normal</option>
+                    <option value="P3">P3 — Low</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="text-[11px] font-medium uppercase tracking-wider" style={{ color: '#6b7280' }}>Deadline</label>
+                <input type="date" value={editForm.deadline} onChange={(e) => setEditForm({ ...editForm, deadline: e.target.value })} className="w-full mt-1" />
+              </div>
+              <div>
+                <label className="text-[11px] font-medium uppercase tracking-wider" style={{ color: '#6b7280' }}>Notes</label>
+                <textarea value={editForm.notes} onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })} className="w-full mt-1" rows={3} />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 mt-5">
+              <button onClick={() => setEditTask(null)} className="btn btn-secondary text-[12px]">Cancel</button>
+              <button onClick={saveEdit} disabled={!editForm.title} className="btn btn-primary text-[12px] disabled:opacity-40">Save Changes</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Result Toast */}
+      {result && (
+        <div className={`toast ${result.includes('Failed') ? '!bg-red-600' : ''}`}>
+          {result}
+          <button onClick={() => setResult(null)} className="ml-3 opacity-60 hover:opacity-100">x</button>
         </div>
       )}
     </div>
