@@ -3,13 +3,14 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models import Sprint, Followup, TeamMember, SprintUpdate, NotificationLog
 from schemas import SprintCreate, SprintOut, SprintUpdateCreate, SprintUpdateOut, SendUpdatesRequest
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import smtplib
 import os
 import json
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import cos_reader
+import standup_local
 
 router = APIRouter(prefix="/api/sprint", tags=["sprint"])
 
@@ -160,11 +161,28 @@ def get_current_sprint(db: Session = Depends(get_db)):
         elapsed_days = (today - start_date).days
         time_pct = min(round((elapsed_days / total_days) * 100), 100)
 
-        # Count tasks from CoS follow-ups created during sprint
+        # Count tasks from CoS follow-ups created during sprint (filtered by date)
         followups = cos_reader.get_all_followups()
-        total_tasks = len(followups)
-        done_tasks = len([f for f in followups if f.get("status") == "resolved"])
+        sprint_fus = [f for f in followups if (f.get("created", "")[:10] or "") >= start_str]
+        total_tasks = len(sprint_fus)
+        done_tasks = len([f for f in sprint_fus if f.get("status") == "resolved"])
+        open_tasks = len([f for f in sprint_fus if f.get("status") in ("open", "in_progress")])
+        overdue_tasks = len([f for f in sprint_fus
+            if f.get("status") in ("open", "in_progress")
+            and (f.get("due") or "9999") < str(today)])
         done_pct = round((done_tasks / total_tasks) * 100) if total_tasks else 0
+
+        # Checklist-level progress
+        total_items = sum(len(f.get("checklist_items") or []) for f in sprint_fus)
+        done_items = sum(
+            len([ci for ci in (f.get("checklist_items") or []) if ci.get("completed")])
+            for f in sprint_fus
+        )
+        items_pct = round((done_items / total_items) * 100) if total_items else 0
+
+        # Velocity (tasks per week)
+        elapsed_weeks = max(elapsed_days / 7, 0.1)
+        velocity = round(done_tasks / elapsed_weeks, 1)
 
         return {
             "id": 1,
@@ -175,10 +193,16 @@ def get_current_sprint(db: Session = Depends(get_db)):
             "status": cos_sprint.get("status", "active"),
             "total_tasks": total_tasks,
             "done_tasks": done_tasks,
+            "open_tasks": open_tasks,
+            "overdue_tasks": overdue_tasks,
             "done_pct": done_pct,
             "time_pct": time_pct,
             "elapsed_days": elapsed_days,
             "total_days": total_days,
+            "total_items": total_items,
+            "done_items": done_items,
+            "items_pct": items_pct,
+            "velocity": velocity,
         }
 
     # Fallback to DB
@@ -232,8 +256,10 @@ def get_burndown(db: Session = Depends(get_db)):
             end_date = today
 
         total_days = (end_date - start_date).days or 1
+        elapsed_days = min((today - start_date).days, total_days)
         followups = cos_reader.get_all_followups()
-        total_tasks = len(followups)
+        sprint_fus = [f for f in followups if (f.get("created", "")[:10] or "") >= start_str]
+        total_tasks = len(sprint_fus)
 
         ideal = []
         actual = []
@@ -242,9 +268,14 @@ def get_burndown(db: Session = Depends(get_db)):
                 "day": day,
                 "remaining": round(total_tasks * (1 - day / total_days), 1),
             })
-            if day <= (today - start_date).days:
-                noise = max(0, total_tasks * (1 - day / total_days) + (day % 3) - 1)
-                actual.append({"day": day, "remaining": round(noise, 1)})
+
+        # Real burndown: count FUs resolved by each day (from resolved_at timestamps)
+        for day in range(elapsed_days + 1):
+            current_date = (start_date + timedelta(days=day)).strftime("%Y-%m-%d")
+            done_by = len([f for f in sprint_fus
+                if f.get("status") == "resolved"
+                and (f.get("resolved_at", "")[:10] or "") <= current_date])
+            actual.append({"day": day, "remaining": total_tasks - done_by})
 
         return {
             "sprint": cos_sprint.get("name", ""),
@@ -279,6 +310,164 @@ def get_burndown(db: Session = Depends(get_db)):
         "total_tasks": total_tasks,
         "ideal": ideal,
         "actual": actual,
+    }
+
+
+@router.get("/standup-activity")
+def get_sprint_standup_activity():
+    """Daily standup data for the current sprint — mood, highlights, blockers per day."""
+    cos_sprint = cos_reader.get_active_sprint()
+    if not cos_sprint:
+        return {"days": [], "mood_trend": []}
+
+    start_str = cos_sprint.get("start", cos_sprint.get("start_date", ""))
+    try:
+        start_date = date.fromisoformat(start_str)
+    except (ValueError, TypeError):
+        return {"days": [], "mood_trend": []}
+
+    today = date.today()
+    elapsed_days = (today - start_date).days
+
+    mood_values = {"great": 5, "good": 4, "neutral": 3, "struggling": 2, "blocked": 1}
+    mood_names = {5: "great", 4: "good", 3: "neutral", 2: "struggling", 1: "blocked"}
+
+    days = []
+    mood_trend = []
+
+    for d in range(elapsed_days + 1):
+        current_date = (start_date + timedelta(days=d)).strftime("%Y-%m-%d")
+        standups = standup_local.get_standups_by_date(current_date)
+
+        posted = len(standups)
+        roster = cos_reader.get_team_roster() or []
+        total = len(roster)
+
+        # Mood average
+        moods = [mood_values.get(s.get("mood", "neutral"), 3) for s in standups]
+        avg_mood_score = round(sum(moods) / len(moods)) if moods else 3
+        avg_mood = mood_names.get(avg_mood_score, "neutral")
+
+        # Highlights from done text
+        highlights = []
+        for s in standups:
+            highlights.extend(s.get("highlights", [])[:2])
+
+        # Blockers count
+        blockers = len([s for s in standups if s.get("blockers")])
+
+        days.append({
+            "date": current_date,
+            "posted": posted,
+            "total": total,
+            "mood": avg_mood,
+            "highlights": highlights[:4],
+            "blockers": blockers,
+        })
+
+        mood_trend.append({
+            "date": current_date,
+            "mood": avg_mood,
+            "score": avg_mood_score if posted > 0 else None,
+        })
+
+    return {"days": days, "mood_trend": mood_trend}
+
+
+@router.post("/updates/auto-generate")
+def auto_generate_weekly_updates(db: Session = Depends(get_db)):
+    """Auto-generate weekly updates from daily standups for the current week."""
+    sprint = db.query(Sprint).filter(Sprint.status == "active").first()
+    if not sprint:
+        return {"error": "No active sprint", "created": 0}
+
+    today = date.today()
+    week_num = today.isocalendar()[1]
+    year = today.year
+    week_label = f"W{week_num}-{year}"
+
+    # Get Monday of current week
+    monday = today - timedelta(days=today.weekday())
+    weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri']
+
+    # Check who already has updates this week
+    existing = db.query(SprintUpdate).filter(
+        SprintUpdate.sprint_id == sprint.id,
+        SprintUpdate.week_label == week_label,
+    ).all()
+    existing_persons = {u.person for u in existing}
+
+    # Get team roster
+    roster = cos_reader.get_team_roster() or []
+    mood_values = {"great": 5, "good": 4, "neutral": 3, "struggling": 2, "blocked": 1}
+    mood_names = {5: "great", 4: "good", 3: "neutral", 2: "struggling", 1: "blocked"}
+
+    created = []
+    skipped = []
+
+    for member in roster:
+        slug = member.get("slug")
+        if not slug or slug in existing_persons:
+            if slug in existing_persons:
+                skipped.append(slug)
+            continue
+
+        # Aggregate standups for this week (Mon-Fri)
+        accomplished_parts = []
+        latest_blockers = None
+        latest_doing = None
+        moods = []
+
+        for day_offset in range(min(5, (today - monday).days + 1)):
+            day_date = (monday + timedelta(days=day_offset)).strftime("%Y-%m-%d")
+            standup = standup_local.get_standup(slug, day_date)
+            if not standup:
+                continue
+
+            day_label = weekdays[day_offset]
+            done = standup.get("done", "").strip()
+            if done:
+                accomplished_parts.append(f"{day_label}: {done}")
+
+            doing = standup.get("doing", "").strip()
+            if doing:
+                latest_doing = doing
+
+            blockers = standup.get("blockers")
+            if blockers and blockers.strip() and blockers.strip().lower() not in ("none", "n/a", ""):
+                latest_blockers = blockers.strip()
+
+            mood = standup.get("mood", "neutral")
+            moods.append(mood_values.get(mood, 3))
+
+        if not accomplished_parts:
+            continue  # No standups this week for this person
+
+        accomplished = "\n".join(accomplished_parts)
+        avg_mood = round(sum(moods) / len(moods)) if moods else 3
+        mood_str = mood_names.get(avg_mood, "neutral")
+
+        update = SprintUpdate(
+            sprint_id=sprint.id,
+            person=slug,
+            week_label=week_label,
+            accomplished=accomplished,
+            blockers=latest_blockers,
+            plan_next_week=latest_doing,
+            mood=mood_str,
+        )
+        db.add(update)
+        created.append(slug)
+
+    db.commit()
+
+    return {
+        "status": "generated",
+        "week": week_label,
+        "created": len(created),
+        "created_for": created,
+        "skipped": len(skipped),
+        "skipped_persons": skipped,
     }
 
 

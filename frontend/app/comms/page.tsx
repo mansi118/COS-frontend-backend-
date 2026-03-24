@@ -356,8 +356,8 @@ export default function CommsPage() {
                       </div>
                     </div>
                     <button onClick={() => runAutomation(a.action, a.name, a.channels)} disabled={runningAction === a.name}
-                      className="btn btn-primary text-[11px] py-1.5 shrink-0 disabled:opacity-40">
-                      {runningAction === a.name ? '...' : 'Run'}
+                      className="btn btn-primary text-[12px] py-2 px-4 shrink-0 disabled:opacity-40">
+                      {runningAction === a.name ? 'Running...' : '▶ Run'}
                     </button>
                   </div>
                 </div>

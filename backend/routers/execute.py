@@ -86,6 +86,15 @@ ACTION_MAP = {
         "Send standup reminders to all team members who haven't posted their daily update yet. "
         "Use Slack DMs and WhatsApp where available."
     ),
+    "sprint_status": (
+        "Get the current sprint status including progress, velocity, and burndown data."
+    ),
+    "sprint_start": (
+        "Start a new sprint named {name} with goals: {goals}."
+    ),
+    "sprint_close": (
+        "Close the current sprint and archive it."
+    ),
     "toggle_checklist_item": (
         "Toggle checklist item {item_index} on follow-up {fu_id}. "
         "If unchecked, mark as completed. If checked, uncheck it. "

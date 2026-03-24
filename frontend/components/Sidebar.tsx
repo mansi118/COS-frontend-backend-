@@ -14,8 +14,6 @@ const navItems = [
   { href: '/vault', label: 'Vault', icon: '▣' },
   { href: '/comms', label: 'Team Comms', icon: '📡' },
   { href: '/fireflies', label: 'Fireflies', icon: '🔥' },
-  { href: '/finance', label: 'Finance', icon: '₹' },
-  { href: '/intel', label: 'Intel', icon: '🌐' },
   { href: '/taskflow', label: 'TaskFlow', icon: '✓' },
 ];
 
