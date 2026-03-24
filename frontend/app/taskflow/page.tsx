@@ -307,7 +307,9 @@ export default function TaskFlowPage() {
                           <span className={`badge text-[9px] ${t.status === 'blocked' ? 'badge-red' : t.status === 'todo' ? 'badge-yellow' : 'badge-gray'}`}>{t.status}</span>
                         )}
 
-                        {(t.tags || []).map((tag) => (
+                        {(t.tags || [])
+                          .filter((tag) => !tag.startsWith('standup') && !tag.startsWith('meeting') && !tag.match(/^\d{4}-/))
+                          .map((tag) => (
                           <span key={tag} className="badge badge-gray text-[9px]">{tag}</span>
                         ))}
 

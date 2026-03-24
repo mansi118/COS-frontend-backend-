@@ -4,19 +4,27 @@ from database import get_db
 from models import Followup
 from schemas import FollowupCreate, FollowupUpdate, FollowupOut
 from datetime import date, datetime
+import os
 import cos_reader
 import standup_fanout
 
 router = APIRouter(prefix="/api/followups", tags=["followups"])
 
+# Resolve slugs to full names
+_roster = cos_reader.get_team_roster() or []
+_roster_map = {r["slug"]: r for r in _roster}
+
 
 def _cos_to_api(fu: dict, idx: int = 0) -> dict:
     """Convert CoS JSON follow-up to API response shape matching FollowupOut."""
+    who = fu.get("who")
+    who_name = _roster_map.get(who, {}).get("name", who) if who else None
     return {
         "id": idx,
         "fu_id": fu.get("id", ""),
         "what": fu.get("what", ""),
-        "who": fu.get("who"),
+        "who": who,
+        "who_name": who_name,
         "due": fu.get("due"),
         "priority": fu.get("priority"),
         "status": fu.get("status", "open"),
@@ -188,6 +196,29 @@ def resolve_followup(fu_id: str, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(fu)
     return fu
+
+
+@router.delete("/{fu_id}")
+def delete_followup(fu_id: str, db: Session = Depends(get_db)):
+    """Delete a follow-up permanently from CoS JSON and DB."""
+    # Delete CoS JSON file
+    cos_path = os.path.join(
+        os.getenv("COS_WORKSPACE", os.path.expanduser("~/.openclaw/workspace")),
+        "data", "follow-ups", f"{fu_id}.json"
+    )
+    if os.path.exists(cos_path):
+        os.remove(cos_path)
+
+    # Delete from DB
+    try:
+        db_fu = db.query(Followup).filter(Followup.fu_id == fu_id).first()
+        if db_fu:
+            db.delete(db_fu)
+            db.commit()
+    except Exception:
+        pass
+
+    return {"deleted": True, "fu_id": fu_id}
 
 
 @router.get("/remind")

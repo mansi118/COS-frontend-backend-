@@ -87,23 +87,51 @@ def get_pulse_board(db: Session = Depends(get_db)):
             total_done += len(done_fus)
             total_overdue += len(overdue_fus)
 
+            # Flatten checklist items into individual task entries
+            expanded_tasks = []
+            for f in active_fus:
+                checklist = f.get("checklist_items") or []
+                if checklist:
+                    for ci in checklist:
+                        if not ci.get("completed"):
+                            expanded_tasks.append({
+                                "fu_id": f.get("id", ""),
+                                "what": ci.get("text", ""),
+                                "due": f.get("due"),
+                                "priority": ci.get("priority", f.get("priority", "P2")),
+                                "source": f.get("source"),
+                                "completed": False,
+                            })
+                else:
+                    expanded_tasks.append({
+                        "fu_id": f.get("id", ""),
+                        "what": f.get("what", ""),
+                        "due": f.get("due"),
+                        "priority": f.get("priority", "P2"),
+                        "source": f.get("source"),
+                        "completed": False,
+                    })
+
+            # Count completed checklist items for reliability
+            completed_checklist = 0
+            total_checklist = 0
+            for f in person_fus:
+                for ci in (f.get("checklist_items") or []):
+                    total_checklist += 1
+                    if ci.get("completed"):
+                        completed_checklist += 1
+
             board.append({
                 "slug": slug,
                 "name": member_data.get("name", roster_info.get("name", slug)),
                 "role": roster_info.get("role", ""),
                 "emoji": "",
-                "active_tasks": [
-                    {
-                        "fu_id": f.get("id", ""),
-                        "what": f.get("what", ""),
-                        "due": f.get("due"),
-                        "priority": f.get("priority", "P2"),
-                    }
-                    for f in active_fus
-                ],
-                "active_count": len(active_fus),
+                "active_tasks": expanded_tasks,
+                "active_count": len(expanded_tasks),
                 "done_count": len(done_fus),
                 "overdue_count": len(overdue_fus),
+                "completed_items": completed_checklist,
+                "total_items": total_checklist,
                 "open": member_data.get("open", 0),
                 "in_progress": member_data.get("in_progress", 0),
                 "completed_today": member_data.get("completed_today", 0),

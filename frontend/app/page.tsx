@@ -30,7 +30,10 @@ interface PulseData {
       what: string;
       due: string | null;
       priority: string;
+      source?: string;
     }>;
+    completed_items?: number;
+    total_items?: number;
   }>;
   date: string;
 }

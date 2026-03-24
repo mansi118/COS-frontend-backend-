@@ -70,6 +70,7 @@ export default function UpdatesPage() {
   const [posting, setPosting] = useState(false);
   const [reminding, setReminding] = useState(false);
   const [result, setResult] = useState<string | null>(null);
+  const [fuDetails, setFuDetails] = useState<Record<string, { checklist?: Array<{ completed: boolean }> }>>({});
   const [expandedPerson, setExpandedPerson] = useState<string | null>(null);
   const [personHistory, setPersonHistory] = useState<Standup[]>([]);
   const [newStandup, setNewStandup] = useState({ person: '', done: '', doing: '', blockers: '', mood: 'good' });
@@ -92,6 +93,12 @@ export default function UpdatesPage() {
     const url = dateParam ? `${API}/api/standups/${dateParam}` : `${API}/api/standups/today`;
     fetch(url).then((r) => r.json()).then((d) => setStandups(d.standups || [])).catch(() => {});
     fetch(`${API}/api/standups/stats${dateParam ? `?date=${dateParam}` : ''}`).then((r) => r.json()).then(setStats).catch(() => {});
+    // Fetch FU details for progress badges
+    fetch(`${API}/api/followups?source=standup`).then((r) => r.json()).then((fus) => {
+      const map: Record<string, { checklist?: Array<{ completed: boolean }> }> = {};
+      for (const fu of fus) if (fu.fu_id) map[fu.fu_id] = { checklist: fu.checklist };
+      setFuDetails(map);
+    }).catch(() => {});
   };
 
   useEffect(() => { load(); }, [dateView]);
@@ -347,11 +354,19 @@ export default function UpdatesPage() {
                       {/* Linked FU/Task badges */}
                       {(linkedFUs.length > 0 || linkedTasks.length > 0) && (
                         <div className="flex flex-wrap gap-1 mt-2">
-                          {linkedFUs.map((id) => (
-                            <a key={id} href="/followups" onClick={(e) => e.stopPropagation()}
-                              className="text-[9px] font-mono px-1.5 py-0.5 rounded transition-opacity hover:opacity-80"
-                              style={{ background: 'rgba(99,102,241,0.1)', color: '#818cf8' }}>{id}</a>
-                          ))}
+                          {linkedFUs.map((id) => {
+                            const fu = fuDetails[id];
+                            const cl = fu?.checklist || [];
+                            const done = cl.filter((c) => c.completed).length;
+                            const total = cl.length;
+                            return (
+                              <a key={id} href="/followups" onClick={(e) => e.stopPropagation()}
+                                className="text-[9px] font-mono px-1.5 py-0.5 rounded transition-opacity hover:opacity-80"
+                                style={{ background: 'rgba(99,102,241,0.1)', color: '#818cf8' }}>
+                                {id}{total > 0 && <span className="opacity-60 ml-0.5">({done}/{total})</span>}
+                              </a>
+                            );
+                          })}
                           {linkedTasks.map((id) => (
                             <a key={id} href="/taskflow" onClick={(e) => e.stopPropagation()}
                               className="text-[9px] font-mono px-1.5 py-0.5 rounded transition-opacity hover:opacity-80"

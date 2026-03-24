@@ -86,6 +86,20 @@ ACTION_MAP = {
         "Send standup reminders to all team members who haven't posted their daily update yet. "
         "Use Slack DMs and WhatsApp where available."
     ),
+    "toggle_checklist_item": (
+        "Toggle checklist item {item_index} on follow-up {fu_id}. "
+        "If unchecked, mark as completed. If checked, uncheck it. "
+        "If all items are completed, resolve the follow-up."
+    ),
+    "edit_followup": (
+        "Update follow-up {fu_id}. Set: what={what}, who={who}, due={due}, priority={priority}."
+    ),
+    "delete_followup": (
+        "Delete follow-up {fu_id} permanently."
+    ),
+    "update_followup_status": (
+        "Update the status of follow-up {fu_id} to {status}."
+    ),
 }
 
 
