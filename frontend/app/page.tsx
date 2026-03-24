@@ -73,8 +73,22 @@ export default function DashboardPage() {
   const [ceoSummary, setCeoSummary] = useState<{one_liner: string; all_clear: boolean; metrics: Record<string, number>} | null>(null);
   const [showQuickActions, setShowQuickActions] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [lastUpdatedMember, setLastUpdatedMember] = useState<string | null>(null);
   const { lastMessage, isConnected } = useWebSocket();
 
+  // Individual refresh functions (instead of monolithic load)
+  const refreshPulse = () => fetch(`${API}/api/pulse`).then((r) => r.json()).then(setPulse).catch(() => {});
+  const refreshBriefing = () => fetch(`${API}/api/briefing/morning`).then((r) => r.json()).then(setBriefing).catch(() => {});
+  const refreshMeetings = () => fetch(`${API}/api/meetings/today`).then((r) => r.json()).then((d) => setMeetings(Array.isArray(d) ? d : d.meetings || [])).catch(() => {});
+  const refreshStandups = () => fetch(`${API}/api/standups/summary`).then((r) => r.json()).then(setStandupSummary).catch(() => {});
+  const refreshTrends = () => fetch(`${API}/api/pulse/trends`).then((r) => r.json()).then(setTrends).catch(() => {});
+  const refreshSprint = () => fetch(`${API}/api/sprint`).then((r) => r.json()).then((d) => setSprint(d?.error ? null : d)).catch(() => {});
+  const refreshClients = () => fetch(`${API}/api/clients`).then((r) => r.json()).then((d) => setClients(Array.isArray(d) ? d : [])).catch(() => {});
+  const refreshActivity = () => fetch(`${API}/api/pulse/activity?limit=12`).then((r) => r.json()).then((d) => setActivity(d?.events || [])).catch(() => {});
+  const refreshAlerts = () => fetch(`${API}/api/pulse/alerts`).then((r) => r.json()).then((d) => setAlerts(d?.total ? d : null)).catch(() => {});
+  const refreshCeo = () => fetch(`${API}/api/pulse/ceo-summary`).then((r) => r.json()).then(setCeoSummary).catch(() => {});
+
+  // Full initial load (all 10 endpoints)
   const load = () => {
     Promise.all([
       fetch(`${API}/api/pulse`).then((r) => r.json()),
@@ -102,11 +116,71 @@ export default function DashboardPage() {
     }).catch(() => setLoading(false));
   };
 
+  // Full load on mount
   useEffect(() => { load(); }, []);
 
+  // Live activity event from WebSocket data
+  const pushLiveEvent = (msg: typeof lastMessage) => {
+    if (!msg) return;
+    const iconMap: Record<string, string> = {
+      followup_update: '📋', standup_update: '📝', task_update: '✓',
+      client_update: '◆', meeting_update: '◷', sprint_update: '⟳',
+      board_update: '◉', performance_update: '△',
+    };
+    const data = msg.data || {};
+    const who = data.who || data.person || data.name || '';
+    const what = data.what || data.title || data.done || msg.file || msg.type;
+    const isResolved = data.status === 'resolved' || data.status === 'completed';
+
+    setActivity((prev) => [{
+      type: msg.type,
+      icon: isResolved ? '✅' : (iconMap[msg.type] || '•'),
+      who: who,
+      what: typeof what === 'string' ? what.slice(0, 80) : msg.type.replace('_', ' '),
+      timestamp: new Date().toISOString(),
+    }, ...prev].slice(0, 12));
+  };
+
+  // Smart partial refresh based on WebSocket message type
   useEffect(() => {
-    if (lastMessage) {
-      load();
+    if (!lastMessage) return;
+    // Prepend live event to activity feed (instant, no API call)
+    pushLiveEvent(lastMessage);
+    // Pulse the affected team member's card
+    const msgData = lastMessage.data || {};
+    const memberSlug = msgData.who || msgData.person || msgData.owner || '';
+    if (memberSlug) {
+      setLastUpdatedMember(memberSlug);
+      setTimeout(() => setLastUpdatedMember(null), 1500);
+    }
+    // Refresh only affected endpoints
+    switch (lastMessage.type) {
+      case 'followup_update':
+        refreshPulse(); refreshAlerts(); refreshCeo(); refreshSprint();
+        break;
+      case 'standup_update':
+        refreshStandups();
+        break;
+      case 'client_update':
+        refreshClients(); refreshAlerts(); refreshCeo();
+        break;
+      case 'meeting_update':
+        refreshMeetings();
+        break;
+      case 'sprint_update':
+        refreshSprint();
+        break;
+      case 'board_update':
+        refreshPulse(); refreshTrends();
+        break;
+      case 'task_update':
+        refreshPulse();
+        break;
+      case 'performance_update':
+        refreshPulse(); refreshCeo();
+        break;
+      default:
+        refreshPulse();
     }
   }, [lastMessage]);
 
@@ -454,11 +528,19 @@ export default function DashboardPage() {
 
         {/* Team Cards */}
         <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
-          {pulse.team.map((member) => (
-            <div key={member.slug} id={`team-${member.slug}`}>
-              <TeamMemberCard {...member} />
-            </div>
-          ))}
+          {pulse.team.map((member) => {
+            const isPulsing = lastUpdatedMember === member.slug;
+            return (
+              <div key={member.slug} id={`team-${member.slug}`}
+                className="rounded-xl transition-all duration-300"
+                style={isPulsing ? {
+                  boxShadow: '0 0 20px rgba(99,102,241,0.4), 0 0 40px rgba(99,102,241,0.15)',
+                  transform: 'scale(1.01)',
+                } : {}}>
+                <TeamMemberCard {...member} />
+              </div>
+            );
+          })}
         </div>
       </div>
 
