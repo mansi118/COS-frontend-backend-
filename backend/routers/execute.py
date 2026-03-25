@@ -67,6 +67,9 @@ ACTION_MAP = {
     "send_meeting_notes": (
         "Email meeting notes for meeting {meeting_id} to {recipients}."
     ),
+    "auto_notify_meeting": (
+        "Send meeting update for meeting {transcript_id} to all team members automatically."
+    ),
     "send_sprint_updates": (
         "Send sprint updates for week '{week}' via {channel}."
     ),
