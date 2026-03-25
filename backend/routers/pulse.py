@@ -330,7 +330,7 @@ def get_person_detail(slug: str):
 
 # --- Pulse Snapshots & Trends ---
 
-def save_pulse_snapshot(db: Session = None):
+def save_pulse_snapshot(db=None):
     """Save today's aggregated stats to data/pulse-snapshots/YYYY-MM-DD.json"""
     os.makedirs(PULSE_SNAPSHOTS_DIR, exist_ok=True)
     today_str = str(date.today())

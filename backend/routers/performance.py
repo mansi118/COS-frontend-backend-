@@ -18,7 +18,6 @@ router = APIRouter(prefix="/api/performance", tags=["performance"])
 @router.get("/report")
 def get_performance_report(
     period: str = Query("biweekly"),
-    ,
 ):
     # Primary: CoS workspace
     perf_data = cos_reader.get_performance_data()

@@ -209,7 +209,6 @@ def search_transcripts(keyword: str = Query(...), limit: int = Query(10, le=50))
 def auto_extract_mom(
     days: int = Query(7, le=90),
     limit: int = Query(10, le=20),
-    ,
 ):
     """Auto-extract action items from recent Fireflies transcripts into follow-ups.
     Idempotent — skips transcripts that have already been processed."""
