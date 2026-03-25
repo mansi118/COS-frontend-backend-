@@ -42,34 +42,33 @@ ACTION_MAP = {
     "resolve_followup": (
         "Resolve follow-up {fu_id} and mark it as completed."
     ),
-    "send_meeting_notes": (
-        "Fetch the Fireflies transcript {transcript_id} and email the meeting notes to {recipients}."
+    "join_meeting": (
+        "Send the Vexa notetaker bot to join the meeting at {meeting_link} and start recording."
     ),
-    "send_sprint_updates": (
-        "Send sprint updates for week '{week}' via {channel}."
+    "leave_meeting": (
+        "Remove the Vexa bot from meeting {meeting_id} on {platform}."
     ),
-    "list_transcripts": (
-        "List the {limit} most recent Fireflies transcripts using the fireflies-notetaker skill "
-        "with --json flag. Return the raw JSON output."
+    "list_meetings": (
+        "List the {limit} most recent recorded meetings from Vexa."
     ),
-    "get_transcript": (
-        "Get the full Fireflies transcript with ID {transcript_id} using the fireflies-notetaker skill "
-        "with --json flag. Include summary, action items, outline, keywords, and sentences. "
-        "Return the raw JSON output."
+    "get_meeting_transcript": (
+        "Get the full transcript for meeting {meeting_id}. "
+        "Include speaker names, timestamps, and action items."
     ),
-    "search_transcripts": (
-        "Search Fireflies transcripts for the keyword '{keyword}' using the fireflies-notetaker skill "
-        "with --json flag. Return up to {limit} results as raw JSON."
-    ),
-    "get_action_items": (
-        "Get action items from the {limit} most recent Fireflies transcripts using the "
-        "fireflies-notetaker skill with --json flag. Return the raw JSON output."
+    "search_meetings": (
+        "Search meeting transcripts for the keyword '{keyword}'. Return up to {limit} results."
     ),
     "analyze_meeting": (
-        "Fetch the Fireflies transcript with ID {transcript_id} and analyze it. "
+        "Analyze the transcript of meeting {meeting_id}. "
         "Identify key decisions, risks, sentiment (positive/neutral/negative/mixed with score 1-10), "
         "notable quotes with speaker names, and provide a 2-3 sentence executive summary. "
         "Return as a JSON object."
+    ),
+    "send_meeting_notes": (
+        "Email meeting notes for meeting {meeting_id} to {recipients}."
+    ),
+    "send_sprint_updates": (
+        "Send sprint updates for week '{week}' via {channel}."
     ),
     "post_standup": (
         "Post a daily standup update for {person}. "

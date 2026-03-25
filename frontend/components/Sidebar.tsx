@@ -13,7 +13,7 @@ const navItems = [
   { href: '/meetings', label: 'Meetings', icon: '◷' },
   { href: '/vault', label: 'Vault', icon: '▣' },
   { href: '/comms', label: 'Team Comms', icon: '📡' },
-  { href: '/fireflies', label: 'Fireflies', icon: '🔥' },
+  { href: '/fireflies', label: 'Meetings', icon: '📋' },
   { href: '/taskflow', label: 'TaskFlow', icon: '✓' },
   { href: '/voice', label: 'Voice', icon: '🎙' },
 ];

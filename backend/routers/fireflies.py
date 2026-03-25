@@ -1,94 +1,197 @@
-"""Fireflies.ai integration — direct GraphQL API (fast) + OpenClaw gateway for AI features."""
+"""Meeting Intelligence — Vexa integration (replaces Fireflies).
+Bot joins meetings, records, transcribes. Same API paths for frontend compatibility."""
 
 import json
 import os
-import re
 import urllib.request
+import urllib.error
 from datetime import datetime, timedelta
 from typing import Optional
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
-import convex_db
 from routers.email import send_email
 import cos_reader
 import standup_fanout
+import convex_db
+import re
 
-router = APIRouter(prefix="/api/fireflies", tags=["fireflies"])
+router = APIRouter(prefix="/api/fireflies", tags=["meetings"])
 
-API_URL = "https://api.fireflies.ai/graphql"
-API_KEY = os.getenv("FIREFLIES_API_KEY", "")
+VEXA_API_URL = os.getenv("VEXA_API_URL", "https://api.cloud.vexa.ai")
+VEXA_API_KEY = os.getenv("VEXA_API_KEY", "")
 
 
-# --- Direct GraphQL client (fast, 2-3s) ---
+# --- Vexa REST client ---
 
-def _graphql(query: str, variables: dict = None) -> dict:
-    if not API_KEY:
-        return {"error": "FIREFLIES_API_KEY not configured"}
-    payload = json.dumps({"query": query, "variables": variables or {}}).encode()
-    req = urllib.request.Request(
-        API_URL, data=payload,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {API_KEY}"},
-    )
+def _vexa_api(method: str, path: str, data: dict = None) -> dict:
+    """Call Vexa REST API."""
+    if not VEXA_API_KEY:
+        return {"error": "VEXA_API_KEY not configured"}
+    url = f"{VEXA_API_URL}{path}"
+    headers = {
+        "X-API-Key": VEXA_API_KEY,
+        "Content-Type": "application/json",
+    }
+    payload = json.dumps(data).encode() if data else None
+    req = urllib.request.Request(url, data=payload, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode())
-            if "errors" in data:
-                return {"error": data["errors"]}
-            return data.get("data", {})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = json.loads(resp.read().decode())
+            return body
     except urllib.error.HTTPError as e:
-        body = e.read().decode() if e.fp else ""
-        return {"error": f"HTTP {e.code}: {body[:200]}"}
+        error_body = ""
+        try:
+            error_body = e.read().decode()
+        except Exception:
+            pass
+        return {"error": f"HTTP {e.code}: {error_body[:200]}"}
     except Exception as e:
         return {"error": str(e)}
 
 
 # --- Helpers ---
 
-def _to_lines(val) -> list[str]:
-    if not val:
-        return []
-    if isinstance(val, list):
-        return [str(x) for x in val if x]
-    if isinstance(val, str):
-        return [line.strip() for line in val.split("\n") if line.strip()]
-    return []
-
-
-def _normalize_transcript(t: dict) -> dict:
-    duration = t.get("duration") or 0
-    duration_mins = duration // 60 if isinstance(duration, int) and duration > 100 else (duration or 0)
-    attendees = t.get("meeting_attendees") or []
+def _normalize_meeting(m: dict) -> dict:
+    """Normalize Vexa meeting to frontend Transcript shape."""
+    duration = m.get("duration", 0) or 0
+    duration_mins = duration // 60 if isinstance(duration, (int, float)) and duration > 100 else duration
+    participants = m.get("participants") or []
     return {
-        "id": t.get("id", ""),
-        "title": t.get("title", "Untitled"),
-        "date": t.get("dateString", ""),
+        "id": str(m.get("id", "")),
+        "title": m.get("title") or m.get("name") or "Untitled",
+        "date": m.get("start_time") or m.get("created_at") or "",
         "duration_mins": duration_mins,
-        "host": t.get("host_email") or "",
+        "host": m.get("organizer") or m.get("host") or "",
         "attendees": [
-            {"name": a.get("displayName") or "", "email": a.get("email", "")}
-            for a in attendees
+            {"name": p if isinstance(p, str) else p.get("name", ""), "email": "" if isinstance(p, str) else p.get("email", "")}
+            for p in participants
         ],
+        "platform": m.get("platform", ""),
+        "meeting_id": m.get("native_meeting_id") or m.get("meeting_id") or "",
+        "status": m.get("status", ""),
     }
 
 
-def _normalize_detail(t: dict) -> dict:
-    base = _normalize_transcript(t)
-    summary = t.get("summary") or {}
+def _normalize_transcript_detail(m: dict, transcript_data: dict) -> dict:
+    """Normalize Vexa meeting + transcript to frontend TranscriptDetail shape."""
+    base = _normalize_meeting(m)
+    segments = transcript_data.get("segments") or transcript_data.get("transcript") or []
+    if isinstance(segments, str):
+        # If transcript is plain text, split into sentences
+        segments = [{"speaker": "", "text": s.strip()} for s in segments.split(". ") if s.strip()]
+
+    sentences = []
+    for seg in segments[:200]:
+        if isinstance(seg, dict):
+            sentences.append({
+                "speaker": seg.get("speaker") or seg.get("speaker_name") or "",
+                "text": seg.get("text") or seg.get("content") or "",
+            })
+
+    # Extract action items heuristically from transcript
+    all_text = " ".join(s["text"] for s in sentences)
+    action_keywords = ["will", "should", "need to", "going to", "action item", "todo", "by friday", "by end of", "deadline"]
+    action_items = []
+    for sent in sentences:
+        if any(kw in sent["text"].lower() for kw in action_keywords):
+            action_items.append(sent["text"].strip())
+
     base.update({
-        "url": t.get("transcript_url") or "",
-        "action_items": _to_lines(summary.get("action_items")),
-        "outline": _to_lines(summary.get("outline")),
-        "keywords": summary.get("keywords") or [],
-        "bullet_summary": _to_lines(summary.get("shorthand_bullet")),
-        "sentences": [
-            {"speaker": s.get("speaker_name", ""), "text": s.get("text", "")}
-            for s in (t.get("sentences") or [])[:200]
-        ],
+        "url": transcript_data.get("url") or "",
+        "action_items": action_items[:20],
+        "outline": [],
+        "keywords": [],
+        "bullet_summary": [],
+        "sentences": sentences,
     })
     return base
 
 
+def _extract_meeting_id(link: str) -> tuple:
+    """Extract platform + meeting ID from a meeting URL."""
+    # Google Meet: https://meet.google.com/abc-defg-hij
+    gm = re.search(r'meet\.google\.com/([a-z\-]+)', link)
+    if gm:
+        return "google_meet", gm.group(1)
+
+    # Zoom: https://zoom.us/j/12345678?pwd=xxx
+    zm = re.search(r'zoom\.us/j/(\d+)', link)
+    if zm:
+        return "zoom", zm.group(1)
+
+    # Teams: various formats
+    tm = re.search(r'teams\.microsoft\.com.*meetup-join/([^/&?]+)', link)
+    if tm:
+        return "teams", tm.group(1)
+
+    return "unknown", link
+
+
 # --- Endpoints ---
+
+# Bot control (NEW — Vexa-specific)
+
+class JoinMeetingRequest(BaseModel):
+    meeting_link: str
+    bot_name: Optional[str] = "NeuralEDGE Notetaker"
+
+
+@router.post("/join")
+def join_meeting(req: JoinMeetingRequest):
+    """Send Vexa bot to join and record a meeting."""
+    platform, meeting_id = _extract_meeting_id(req.meeting_link)
+    if platform == "unknown":
+        return {"error": "Could not detect meeting platform from URL"}
+
+    bot_data = {
+        "platform": platform,
+        "native_meeting_id": meeting_id,
+        "bot_name": req.bot_name,
+        "recording_enabled": True,
+        "transcribe_enabled": True,
+    }
+    result = _vexa_api("POST", "/bots", bot_data)
+    if "error" in result:
+        return result
+
+    # Store in Convex
+    convex_db.mutate("vexa_meetings:create", {
+        "title": f"Meeting — {meeting_id}",
+        "platform": platform,
+        "meeting_id": meeting_id,
+        "status": "joining",
+        "start_time": datetime.utcnow().isoformat(),
+        "created_at": datetime.utcnow().isoformat(),
+    })
+
+    return {
+        "status": "joining",
+        "platform": platform,
+        "meeting_id": meeting_id,
+        "bot_name": req.bot_name,
+        "vexa_response": result,
+    }
+
+
+@router.delete("/leave/{platform}/{meeting_id}")
+def leave_meeting(platform: str, meeting_id: str):
+    """Remove Vexa bot from a meeting."""
+    result = _vexa_api("DELETE", f"/bots/{platform}/{meeting_id}")
+    return {"status": "left", "platform": platform, "meeting_id": meeting_id, "vexa_response": result}
+
+
+@router.get("/active")
+def get_active_bots():
+    """List currently active meeting bots."""
+    # Check Vexa for active meetings
+    meetings = _vexa_api("GET", "/meetings")
+    if "error" in meetings:
+        return meetings
+    active = [m for m in meetings.get("meetings", []) if m.get("status") in ("joining", "recording", "in_progress")]
+    return {"active": [_normalize_meeting(m) for m in active], "count": len(active)}
+
+
+# --- Existing endpoints (rewritten for Vexa) ---
 
 @router.get("/list")
 def list_transcripts(
@@ -97,51 +200,58 @@ def list_transcripts(
     from_date: Optional[str] = Query(None, alias="from"),
     to_date: Optional[str] = Query(None, alias="to"),
 ):
-    query = """
-    query Transcripts($limit: Int, $skip: Int, $fromDate: DateTime, $toDate: DateTime) {
-      transcripts(limit: $limit, skip: $skip, fromDate: $fromDate, toDate: $toDate) {
-        id title dateString duration host_email
-        meeting_attendees { displayName email }
-      }
-    }
-    """
-    variables = {"limit": limit, "skip": skip}
-    if from_date:
-        variables["fromDate"] = from_date
-    if to_date:
-        variables["toDate"] = to_date
-
-    data = _graphql(query, variables)
+    """List recorded meetings from Vexa."""
+    data = _vexa_api("GET", "/meetings")
     if "error" in data:
         return data
 
-    transcripts = data.get("transcripts", [])
+    meetings = data.get("meetings", [])
+
+    # Filter by date if provided
+    if from_date:
+        meetings = [m for m in meetings if (m.get("start_time") or m.get("created_at") or "") >= from_date]
+    if to_date:
+        meetings = [m for m in meetings if (m.get("start_time") or m.get("created_at") or "") <= to_date]
+
+    # Sort by date desc
+    meetings.sort(key=lambda m: m.get("start_time") or m.get("created_at") or "", reverse=True)
+
+    # Paginate
+    meetings = meetings[skip:skip + limit]
+
     return {
-        "transcripts": [_normalize_transcript(t) for t in transcripts],
-        "count": len(transcripts),
+        "transcripts": [_normalize_meeting(m) for m in meetings],
+        "count": len(meetings),
     }
 
 
 @router.get("/transcript/{transcript_id}")
 def get_transcript(transcript_id: str):
-    query = """
-    query Transcript($transcriptId: String!) {
-      transcript(id: $transcriptId) {
-        id title dateString duration host_email transcript_url
-        meeting_attendees { displayName email }
-        summary { keywords action_items outline shorthand_bullet }
-        sentences { text speaker_name }
-      }
-    }
-    """
-    data = _graphql(query, {"transcriptId": transcript_id})
-    if "error" in data:
-        return data
+    """Get full transcript for a meeting."""
+    # First get the meeting to find platform + native_meeting_id
+    meetings_data = _vexa_api("GET", "/meetings")
+    if "error" in meetings_data:
+        return meetings_data
 
-    t = data.get("transcript")
-    if not t:
-        return {"error": "Transcript not found"}
-    return _normalize_detail(t)
+    meeting = None
+    for m in meetings_data.get("meetings", []):
+        if str(m.get("id")) == transcript_id or m.get("native_meeting_id") == transcript_id:
+            meeting = m
+            break
+
+    if not meeting:
+        return {"error": "Meeting not found"}
+
+    platform = meeting.get("platform", "google_meet")
+    native_id = meeting.get("native_meeting_id") or transcript_id
+
+    # Get transcript
+    transcript_data = _vexa_api("GET", f"/transcripts/{platform}/{native_id}")
+    if "error" in transcript_data:
+        # Return meeting info without transcript
+        return _normalize_meeting(meeting)
+
+    return _normalize_transcript_detail(meeting, transcript_data)
 
 
 @router.get("/actions")
@@ -150,55 +260,55 @@ def get_action_items(
     from_date: Optional[str] = Query(None, alias="from"),
     to_date: Optional[str] = Query(None, alias="to"),
 ):
-    query = """
-    query Transcripts($limit: Int, $fromDate: DateTime, $toDate: DateTime) {
-      transcripts(limit: $limit, fromDate: $fromDate, toDate: $toDate) {
-        id title dateString
-        summary { action_items }
-      }
-    }
-    """
-    variables = {"limit": limit}
+    """Get action items extracted from recent meetings."""
+    meetings_data = _vexa_api("GET", "/meetings")
+    if "error" in meetings_data:
+        return meetings_data
+
+    meetings = meetings_data.get("meetings", [])
     if from_date:
-        variables["fromDate"] = from_date
-    if to_date:
-        variables["toDate"] = to_date
+        meetings = [m for m in meetings if (m.get("start_time") or "") >= from_date]
+    meetings = meetings[:limit]
 
-    data = _graphql(query, variables)
-    if "error" in data:
-        return data
+    result_meetings = []
+    for m in meetings:
+        platform = m.get("platform", "google_meet")
+        native_id = m.get("native_meeting_id", "")
+        if not native_id:
+            continue
 
-    meetings = []
-    for t in data.get("transcripts", []):
-        items = _to_lines((t.get("summary") or {}).get("action_items"))
-        if items:
-            meetings.append({
-                "id": t["id"],
-                "title": t.get("title", "Untitled"),
-                "date": t.get("dateString"),
-                "action_items": items,
+        transcript_data = _vexa_api("GET", f"/transcripts/{platform}/{native_id}")
+        if "error" in transcript_data:
+            continue
+
+        detail = _normalize_transcript_detail(m, transcript_data)
+        if detail.get("action_items"):
+            result_meetings.append({
+                "id": str(m.get("id", "")),
+                "title": detail["title"],
+                "date": detail["date"],
+                "action_items": detail["action_items"],
             })
-    return {"meetings": meetings, "total_actions": sum(len(m["action_items"]) for m in meetings)}
+
+    return {
+        "meetings": result_meetings,
+        "total_actions": sum(len(m["action_items"]) for m in result_meetings),
+    }
 
 
 @router.get("/search")
 def search_transcripts(keyword: str = Query(...), limit: int = Query(10, le=50)):
-    query = """
-    query Transcripts($keyword: String!, $limit: Int) {
-      transcripts(keyword: $keyword, limit: $limit) {
-        id title dateString duration host_email
-      }
-    }
-    """
-    data = _graphql(query, {"keyword": keyword, "limit": limit})
-    if "error" in data:
-        return data
+    """Search meetings by keyword in title."""
+    meetings_data = _vexa_api("GET", "/meetings")
+    if "error" in meetings_data:
+        return meetings_data
+
+    meetings = meetings_data.get("meetings", [])
+    keyword_lower = keyword.lower()
+    matches = [m for m in meetings if keyword_lower in (m.get("title") or "").lower()]
 
     return {
-        "results": [
-            {"id": t["id"], "title": t.get("title", "Untitled"), "date": t.get("dateString"), "duration_mins": (t.get("duration") or 0) // 60, "host": t.get("host_email")}
-            for t in data.get("transcripts", [])
-        ],
+        "results": [_normalize_meeting(m) for m in matches[:limit]],
         "keyword": keyword,
     }
 
@@ -210,71 +320,90 @@ def auto_extract_mom(
     days: int = Query(7, le=90),
     limit: int = Query(10, le=20),
 ):
-    """Auto-extract action items from recent Fireflies transcripts into follow-ups.
-    Idempotent — skips transcripts that have already been processed."""
-    if not API_KEY:
-        return {"error": "FIREFLIES_API_KEY not configured", "processed": 0}
+    """Auto-extract action items from recent Vexa meetings into follow-ups."""
+    if not VEXA_API_KEY:
+        return {"error": "VEXA_API_KEY not configured", "processed": 0}
 
-    from_date = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%dT00:00:00Z")
+    meetings_data = _vexa_api("GET", "/meetings")
+    if "error" in meetings_data:
+        return {"error": meetings_data["error"], "processed": 0}
 
-    query = """
-    query Transcripts($limit: Int, $fromDate: DateTime) {
-      transcripts(limit: $limit, fromDate: $fromDate) {
-        id title dateString
-        summary { action_items }
-      }
-    }
-    """
-    data = _graphql(query, {"limit": limit, "fromDate": from_date})
-    if "error" in data:
-        return {"error": data["error"], "processed": 0}
+    meetings = meetings_data.get("meetings", [])
+    cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+    meetings = [m for m in meetings if (m.get("start_time") or m.get("created_at") or "") >= cutoff]
+    meetings = meetings[:limit]
 
-    transcripts = data.get("transcripts", [])
     created = []
     skipped = 0
 
-    for t in transcripts:
-        transcript_id = t.get("id", "")
-        action_items = _to_lines((t.get("summary") or {}).get("action_items"))
+    for m in meetings:
+        meeting_id = str(m.get("id", ""))
+        platform = m.get("platform", "google_meet")
+        native_id = m.get("native_meeting_id", "")
+        if not native_id:
+            skipped += 1
+            continue
+
+        # Get transcript
+        transcript_data = _vexa_api("GET", f"/transcripts/{platform}/{native_id}")
+        if "error" in transcript_data:
+            skipped += 1
+            continue
+
+        detail = _normalize_transcript_detail(m, transcript_data)
+        action_items = detail.get("action_items", [])
         if not action_items:
             skipped += 1
             continue
 
         fu_id = standup_fanout.create_followups_from_meeting(
-            transcript_id=transcript_id,
+            transcript_id=meeting_id,
             action_items=action_items,
-            title=t.get("title", "Untitled"),
-            meeting_date=t.get("dateString", ""),
-            db=db,
+            title=detail.get("title", "Untitled"),
+            meeting_date=detail.get("date", ""),
+            db=None,
         )
         if fu_id:
-            created.append({"fu_id": fu_id, "transcript_id": transcript_id, "title": t.get("title"), "items": len(action_items)})
+            created.append({"fu_id": fu_id, "transcript_id": meeting_id, "title": detail["title"], "items": len(action_items)})
         else:
             skipped += 1
 
-    # Collect ALL extracted transcript IDs (both new and previously extracted)
+    # Collect all extracted meeting IDs
     all_fus = cos_reader.get_all_followups()
     extracted_ids = [f.get("source_id") for f in all_fus if f.get("source") == "meeting" and f.get("source_id")]
 
     return {
         "processed": len(created),
         "skipped": skipped,
-        "total_transcripts": len(transcripts),
+        "total_transcripts": len(meetings),
         "created_followups": created,
         "extracted_transcript_ids": extracted_ids,
     }
 
 
-# --- AI Intelligence (uses OpenClaw gateway if available) ---
+# --- AI Intelligence ---
 
 @router.get("/intelligence/{transcript_id}")
 async def get_intelligence(transcript_id: str):
+    """AI analysis of a meeting transcript via OpenClaw."""
+    # Get transcript first
+    detail = get_transcript(transcript_id)
+    if "error" in detail:
+        return detail
+
+    sentences = detail.get("sentences", [])
+    if not sentences:
+        return {"error": "No transcript available for analysis"}
+
+    transcript_text = "\n".join(f"{s['speaker']}: {s['text']}" for s in sentences[:100])
+
     try:
         import gateway
         instruction = (
-            f"Fetch the Fireflies transcript with ID {transcript_id} and analyze it. "
-            f"Return JSON with: decisions (array), risks (array), sentiment (string), "
-            f"sentiment_score (1-10), notable_quotes (array), executive_summary (string)."
+            f"Analyze this meeting transcript and return JSON with: "
+            f"decisions (array), risks (array), sentiment (string), "
+            f"sentiment_score (1-10), notable_quotes (array), executive_summary (string).\n\n"
+            f"Transcript:\n{transcript_text}"
         )
         result = await gateway.execute(instruction)
         if result.get("success"):
@@ -284,7 +413,7 @@ async def get_intelligence(transcript_id: str):
                 return {"raw": result.get("result", "")[:500]}
         return {"error": result.get("error", "Gateway failed")}
     except ImportError:
-        return {"error": "OpenClaw gateway not available for AI analysis"}
+        return {"error": "OpenClaw gateway not available"}
 
 
 # --- Send Notes ---
@@ -293,18 +422,18 @@ class SendNotesRequest(BaseModel):
     transcript_id: str
     to: list[str]
     include_actions: bool = True
-    include_outline: bool = True
     include_transcript: bool = False
 
 
 @router.post("/send-notes")
 def send_meeting_notes(req: SendNotesRequest):
+    """Email meeting notes."""
     detail = get_transcript(req.transcript_id)
     if "error" in detail:
         return detail
 
     lines = [
-        f"# Meeting Notes — {detail['title']}",
+        f"# Meeting Notes — {detail.get('title', 'Meeting')}",
         "",
         f"**Date:** {detail.get('date', 'N/A')}",
         f"**Duration:** {detail.get('duration_mins', '?')} minutes",
@@ -313,11 +442,8 @@ def send_meeting_notes(req: SendNotesRequest):
 
     attendees = detail.get("attendees", [])
     if attendees:
-        names = ", ".join(a["name"] or a["email"] for a in attendees)
+        names = ", ".join(a.get("name") or a.get("email") or "?" for a in attendees)
         lines.append(f"**Attendees:** {names}")
-
-    if detail.get("url"):
-        lines.append(f"**Full Transcript:** {detail['url']}")
     lines.append("")
 
     if req.include_actions and detail.get("action_items"):
@@ -326,24 +452,13 @@ def send_meeting_notes(req: SendNotesRequest):
             lines.append(f"- [ ] {item}")
         lines.append("")
 
-    if req.include_outline and detail.get("outline"):
-        lines.extend(["---", "## Outline", ""])
-        for item in detail["outline"]:
-            lines.append(f"- {item}")
-        lines.append("")
-
-    if detail.get("keywords"):
-        lines.extend(["---", f"**Keywords:** {', '.join(detail['keywords'])}", ""])
-
     if req.include_transcript and detail.get("sentences"):
         lines.extend(["---", "## Transcript", ""])
         for s in detail["sentences"][:50]:
             lines.append(f"**{s['speaker']}:** {s['text']}")
-        if len(detail["sentences"]) > 50:
-            lines.append(f"*... and {len(detail['sentences']) - 50} more lines*")
 
     body = "\n".join(lines)
-    subject = f"Meeting Notes — {detail['title']} — {detail.get('date', '')}"
+    subject = f"Meeting Notes — {detail.get('title', 'Meeting')} — {detail.get('date', '')}"
 
     results = []
     for recipient in req.to:
@@ -353,7 +468,7 @@ def send_meeting_notes(req: SendNotesRequest):
     sent = sum(1 for r in results if r.get("success"))
     return {
         "status": "sent" if sent == len(req.to) else "partial" if sent > 0 else "failed",
-        "meeting": detail["title"],
+        "meeting": detail.get("title", ""),
         "sent": sent,
         "total": len(req.to),
         "results": results,
@@ -362,25 +477,23 @@ def send_meeting_notes(req: SendNotesRequest):
 
 @router.post("/send-notes-to-team")
 def send_notes_to_team(transcript_id: str = Query(...)):
+    """Email notes to all team members."""
     routes = cos_reader.get_notification_routes()
     if not routes:
         return {"error": "notification-routes.json not found"}
-
     contacts = routes.get("contacts", {})
     team_emails = [c["email"] for c in contacts.values() if c.get("email")]
     if not team_emails:
         return {"error": "No team members with email addresses"}
-
-    req = SendNotesRequest(
-        transcript_id=transcript_id, to=team_emails,
-        include_actions=True, include_outline=True, include_transcript=False,
-    )
+    req = SendNotesRequest(transcript_id=transcript_id, to=team_emails, include_actions=True, include_transcript=False)
     return send_meeting_notes(req)
 
 
 @router.get("/config")
-def get_fireflies_config():
+def get_config():
+    """Meeting intelligence configuration status."""
     return {
-        "configured": bool(API_KEY),
-        "api_url": API_URL,
+        "configured": bool(VEXA_API_KEY),
+        "api_url": VEXA_API_URL,
+        "provider": "vexa",
     }

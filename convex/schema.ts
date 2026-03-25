@@ -130,4 +130,21 @@ export default defineSchema({
     data: v.any(),
     created_at: v.optional(v.string()),
   }).index("by_date", ["date"]),
+
+  vexa_meetings: defineTable({
+    title: v.string(),
+    platform: v.string(),
+    meeting_id: v.string(),
+    status: v.string(),
+    start_time: v.optional(v.string()),
+    end_time: v.optional(v.string()),
+    duration_sec: v.optional(v.number()),
+    participants: v.optional(v.array(v.string())),
+    transcript_available: v.optional(v.boolean()),
+    intelligence_done: v.optional(v.boolean()),
+    vexa_id: v.optional(v.number()),
+    created_at: v.optional(v.string()),
+  }).index("by_meeting_id", ["meeting_id"])
+    .index("by_status", ["status"])
+    .index("by_platform", ["platform"]),
 });

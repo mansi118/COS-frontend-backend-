@@ -134,6 +134,9 @@ export default function FirefliesPage() {
   const [dateRange, setDateRange] = useState<DateRange>({ from: '', to: '' });
   const [extractedIds, setExtractedIds] = useState<Set<string>>(new Set());
   const [extractResult, setExtractResult] = useState<string | null>(null);
+  const [showJoin, setShowJoin] = useState(false);
+  const [joinLink, setJoinLink] = useState('');
+  const [joining, setJoining] = useState(false);
 
   // --- Data Fetching ---
 
@@ -225,6 +228,30 @@ export default function FirefliesPage() {
   const applyDateFilter = () => {
     loadTranscripts(dateRange.from || undefined, dateRange.to || undefined);
     loadActions(dateRange.from || undefined, dateRange.to || undefined);
+  };
+
+  // --- Join Meeting ---
+
+  const joinMeeting = async () => {
+    if (!joinLink) return;
+    setJoining(true);
+    try {
+      const res = await fetch(`${API}/api/fireflies/join`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ meeting_link: joinLink }),
+      });
+      const data = await res.json();
+      if (data.status === 'joining') {
+        setSendResult(`Bot joining ${data.platform} meeting: ${data.meeting_id}`);
+        setJoinLink('');
+        setShowJoin(false);
+        loadTranscripts();
+      } else {
+        setSendResult(`Failed: ${data.error || 'Unknown error'}`);
+      }
+    } catch { setSendResult('Failed to connect'); }
+    finally { setJoining(false); setTimeout(() => setSendResult(null), 5000); }
   };
 
   // --- Actions ---
@@ -431,10 +458,10 @@ export default function FirefliesPage() {
   if (gatewayConnected === false) {
     return (
       <div className="space-y-4">
-        <h2 className="text-xl font-bold" style={{ color: '#e5e7eb' }}>Fireflies</h2>
+        <h2 className="text-xl font-bold" style={{ color: '#e5e7eb' }}>Meetings</h2>
         <div className="card p-8 text-center">
           <p className="text-sm" style={{ color: '#f87171' }}>OpenClaw Gateway disconnected</p>
-          <p className="text-[12px] mt-2" style={{ color: '#6b7280' }}>Fireflies data is fetched via OpenClaw. Check that the gateway is running.</p>
+          <p className="text-[12px] mt-2" style={{ color: '#6b7280' }}>Meeting data requires the gateway. Check that OpenClaw is running.</p>
         </div>
       </div>
     );
@@ -445,10 +472,14 @@ export default function FirefliesPage() {
       {/* Header with date picker */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h2 className="text-xl font-bold" style={{ color: '#e5e7eb' }}>Fireflies</h2>
-          <p className="text-[12px] mt-0.5" style={{ color: '#6b7280' }}>Meeting transcripts, action items & notes distribution</p>
+          <h2 className="text-xl font-bold" style={{ color: '#e5e7eb' }}>Meetings</h2>
+          <p className="text-[12px] mt-0.5" style={{ color: '#6b7280' }}>Meeting transcripts, action items & notes — powered by Vexa</p>
         </div>
         <div className="flex items-center gap-3 shrink-0">
+          <button onClick={() => setShowJoin(!showJoin)}
+            className="btn btn-primary text-[12px]">
+            {showJoin ? 'Close' : '📋 Join Meeting'}
+          </button>
           <div className="flex items-center gap-2">
             <label className="text-[10px] font-medium uppercase tracking-wider" style={{ color: '#4b5563' }}>From</label>
             <input
@@ -482,6 +513,31 @@ export default function FirefliesPage() {
           )}
         </div>
       </div>
+
+      {/* Join Meeting Panel */}
+      {showJoin && (
+        <div className="card p-5">
+          <h3 className="text-sm font-semibold mb-3" style={{ color: '#e5e7eb' }}>Join Meeting with Notetaker Bot</h3>
+          <div className="flex gap-3">
+            <input
+              placeholder="Paste meeting link (Google Meet, Zoom, or Teams URL)"
+              value={joinLink}
+              onChange={(e) => setJoinLink(e.target.value)}
+              className="flex-1"
+            />
+            <button
+              onClick={joinMeeting}
+              disabled={joining || !joinLink}
+              className="btn btn-primary text-[12px] px-4 disabled:opacity-40 shrink-0"
+            >
+              {joining ? 'Joining...' : 'Send Bot'}
+            </button>
+          </div>
+          <p className="text-[10px] mt-2" style={{ color: '#6b7280' }}>
+            Supports: Google Meet (meet.google.com/...) · Zoom (zoom.us/j/...) · Teams (teams.microsoft.com/...)
+          </p>
+        </div>
+      )}
 
       {/* Stats Row */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -556,7 +612,7 @@ export default function FirefliesPage() {
             ) : transcripts.length === 0 ? (
               <div className="card p-8 text-center">
                 <p className="text-sm" style={{ color: '#6b7280' }}>No meetings to show in timeline</p>
-                <p className="text-[11px] mt-1" style={{ color: '#4b5563' }}>Try adjusting the date range or check Fireflies API status</p>
+                <p className="text-[11px] mt-1" style={{ color: '#4b5563' }}>Try adjusting the date range or check Vexa API status</p>
               </div>
             ) : (
               <div className="space-y-6">
@@ -653,7 +709,7 @@ export default function FirefliesPage() {
             ) : transcripts.length === 0 ? (
               <div className="card p-8 text-center">
                 <p className="text-sm" style={{ color: '#6b7280' }}>No transcripts found</p>
-                <p className="text-[11px] mt-1" style={{ color: '#4b5563' }}>Try adjusting the date range or check Fireflies API status</p>
+                <p className="text-[11px] mt-1" style={{ color: '#4b5563' }}>Try adjusting the date range or check Vexa API status</p>
               </div>
             ) : (
               transcripts.map((t) => (
@@ -986,7 +1042,7 @@ export default function FirefliesPage() {
               {selected.url && (
                 <a href={selected.url} target="_blank" rel="noopener noreferrer"
                   className="text-[11px] font-medium block" style={{ color: '#818cf8' }}>
-                  View on Fireflies →
+                  View Transcript →
                 </a>
               )}
 
