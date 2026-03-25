@@ -113,6 +113,25 @@ class PerformanceSnapshot(Base):
     evaluated_at = Column(DateTime, server_default=func.now())
 
 
+class VoiceUpdate(Base):
+    __tablename__ = "voice_updates"
+    id = Column(Integer, primary_key=True)
+    vu_id = Column(String(20), unique=True, nullable=False)
+    who = Column(String(50), ForeignKey("team_members.slug"))
+    type = Column(String(20), default="general")
+    audio_url = Column(Text)
+    audio_format = Column(String(10), default="webm")
+    duration_sec = Column(Integer)
+    transcript = Column(Text)
+    summary = Column(Text)
+    routed_to = Column(JSONB)
+    listened_by = Column(JSONB)
+    priority = Column(String(5), default="P2")
+    tags = Column(ARRAY(String))
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 class BoardSnapshot(Base):
     __tablename__ = "board_snapshots"
     id = Column(Integer, primary_key=True)

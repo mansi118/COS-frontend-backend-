@@ -15,6 +15,7 @@ const navItems = [
   { href: '/comms', label: 'Team Comms', icon: '📡' },
   { href: '/fireflies', label: 'Fireflies', icon: '🔥' },
   { href: '/taskflow', label: 'TaskFlow', icon: '✓' },
+  { href: '/voice', label: 'Voice', icon: '🎙' },
 ];
 
 export default function Sidebar() {

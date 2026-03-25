@@ -74,6 +74,8 @@ export default function DashboardPage() {
   const [showQuickActions, setShowQuickActions] = useState(false);
   const [loading, setLoading] = useState(true);
   const [lastUpdatedMember, setLastUpdatedMember] = useState<string | null>(null);
+  const [voiceUpdates, setVoiceUpdates] = useState<Array<{vu_id: string; who: string | null; who_name?: string | null; type: string; audio_url?: string | null; duration_sec?: number | null; summary?: string | null; listened_by?: string[]; created_at?: string}>>([]);
+  const [voiceStats, setVoiceStats] = useState<{unlistened: number; today: number} | null>(null);
   const { lastMessage, isConnected } = useWebSocket();
 
   // Individual refresh functions (instead of monolithic load)
@@ -87,6 +89,10 @@ export default function DashboardPage() {
   const refreshActivity = () => fetch(`${API}/api/pulse/activity?limit=12`).then((r) => r.json()).then((d) => setActivity(d?.events || [])).catch(() => {});
   const refreshAlerts = () => fetch(`${API}/api/pulse/alerts`).then((r) => r.json()).then((d) => setAlerts(d?.total ? d : null)).catch(() => {});
   const refreshCeo = () => fetch(`${API}/api/pulse/ceo-summary`).then((r) => r.json()).then(setCeoSummary).catch(() => {});
+  const refreshVoice = () => {
+    fetch(`${API}/api/voice/feed?limit=3`).then((r) => r.json()).then((d) => setVoiceUpdates(d.updates || [])).catch(() => {});
+    fetch(`${API}/api/voice/stats`).then((r) => r.json()).then((d) => setVoiceStats({ unlistened: d.unlistened || 0, today: d.today || 0 })).catch(() => {});
+  };
 
   // Full initial load (all 10 endpoints)
   const load = () => {
@@ -117,7 +123,7 @@ export default function DashboardPage() {
   };
 
   // Full load on mount
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); refreshVoice(); }, []);
 
   // Live activity event from WebSocket data
   const pushLiveEvent = (msg: typeof lastMessage) => {
@@ -178,6 +184,9 @@ export default function DashboardPage() {
         break;
       case 'performance_update':
         refreshPulse(); refreshCeo();
+        break;
+      case 'voice_update':
+        refreshVoice();
         break;
       default:
         refreshPulse();
@@ -585,6 +594,51 @@ export default function DashboardPage() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Voice Updates Widget */}
+      {(voiceUpdates.length > 0 || (voiceStats && voiceStats.today > 0)) && (
+        <div className="card p-5">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-semibold" style={{ color: '#e5e7eb' }}>Voice Updates</h3>
+              {voiceStats && voiceStats.unlistened > 0 && (
+                <span className="text-[9px] px-1.5 py-0.5 rounded-full font-bold" style={{ background: 'rgba(99,102,241,0.15)', color: '#818cf8' }}>
+                  {voiceStats.unlistened} new
+                </span>
+              )}
+            </div>
+            <a href="/voice" className="text-[11px] font-medium transition-opacity hover:opacity-80" style={{ color: '#818cf8' }}>
+              View All →
+            </a>
+          </div>
+          <div className="space-y-2">
+            {voiceUpdates.slice(0, 3).map((vu) => {
+              const name = vu.who_name || vu.who || 'Unknown';
+              const isNew = !(vu.listened_by || []).includes('ceo');
+              const typeIcon: Record<string, string> = { standup: '📝', meeting_note: '📋', blocker: '🔴', general: '🎙' };
+              return (
+                <div key={vu.vu_id} className="flex items-center gap-3 px-3 py-2 rounded-lg" style={{ background: isNew ? 'rgba(99,102,241,0.04)' : 'rgba(255,255,255,0.02)', border: `1px solid ${isNew ? 'rgba(99,102,241,0.12)' : 'rgba(255,255,255,0.04)'}` }}>
+                  <span className="text-[12px] shrink-0">{typeIcon[vu.type] || '🎙'}</span>
+                  <div className="flex-1 min-w-0">
+                    <span className="text-[12px] font-medium" style={{ color: '#d1d5db' }}>{name}</span>
+                    <span className="text-[10px] ml-1.5" style={{ color: '#6b7280' }}>{vu.type} · {vu.duration_sec ? `${Math.floor(vu.duration_sec / 60)}:${(vu.duration_sec % 60).toString().padStart(2, '0')}` : '...'}</span>
+                  </div>
+                  {vu.audio_url && (
+                    <audio src={vu.audio_url} controls className="h-7 shrink-0" style={{ maxWidth: '140px' }} />
+                  )}
+                  {isNew && <span className="w-2 h-2 rounded-full bg-indigo-500 shrink-0" />}
+                </div>
+              );
+            })}
+          </div>
+          <div className="flex gap-2 mt-3">
+            <a href="/voice" className="text-[11px] px-3 py-1.5 rounded-md transition-colors hover:bg-indigo-500/10"
+              style={{ color: '#818cf8', border: '1px solid rgba(99,102,241,0.2)' }}>
+              🎙 Record Update
+            </a>
+          </div>
         </div>
       )}
 

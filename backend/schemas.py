@@ -178,3 +178,25 @@ class PerformanceOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class VoiceOut(BaseModel):
+    id: int
+    vu_id: str
+    who: Optional[str] = None
+    who_name: Optional[str] = None
+    type: str
+    audio_url: Optional[str] = None
+    audio_format: Optional[str] = None
+    duration_sec: Optional[int] = None
+    transcript: Optional[str] = None
+    summary: Optional[str] = None
+    routed_to: Optional[list[dict]] = None
+    listened_by: Optional[list[str]] = None
+    priority: Optional[str] = None
+    tags: Optional[list[str]] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True

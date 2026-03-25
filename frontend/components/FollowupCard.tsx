@@ -51,7 +51,7 @@ export default function FollowupCard({
   fu_id, what, who, who_name, due, priority, status, source, source_id, checklist,
   onToggleItem, onEdit, onDelete, onStatusChange, id,
 }: FollowupCardProps) {
-  const [expanded, setExpanded] = useState(source === 'standup' || source === 'meeting');
+  const [expanded, setExpanded] = useState(source === 'standup' || source === 'meeting' || source === 'voice');
   const [localChecklist, setLocalChecklist] = useState<ChecklistItem[] | null>(null);
   const isOverdue = due && new Date(due) < new Date() && status !== 'resolved';
   const resolved = status === 'resolved';
@@ -85,6 +85,8 @@ export default function FollowupCard({
     ? { label: 'Standup', bg: 'rgba(99,102,241,0.1)', color: '#818cf8', href: '/updates' }
     : source === 'meeting'
     ? { label: 'Meeting', bg: 'rgba(245,158,11,0.1)', color: '#f59e0b', href: '/fireflies' }
+    : source === 'voice'
+    ? { label: '🎙 Voice', bg: 'rgba(168,85,247,0.1)', color: '#a78bfa', href: '/voice' }
     : source && source !== 'manual' && source !== 'dashboard'
     ? { label: source, bg: 'rgba(255,255,255,0.04)', color: '#6b7280', href: null }
     : null;

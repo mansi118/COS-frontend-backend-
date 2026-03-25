@@ -398,6 +398,9 @@ export default function TaskFlowPage() {
                         {t.source === 'meeting' && (
                           <a href="/fireflies" className="text-[9px] px-1.5 py-0.5 rounded font-medium hover:opacity-80" style={{ background: 'rgba(245,158,11,0.1)', color: '#f59e0b' }}>Meeting</a>
                         )}
+                        {t.source === 'voice' && (
+                          <a href="/voice" className="text-[9px] px-1.5 py-0.5 rounded font-medium hover:opacity-80" style={{ background: 'rgba(168,85,247,0.1)', color: '#a78bfa' }}>🎙 Voice</a>
+                        )}
 
                         {t.project_name && <span className="badge badge-purple text-[9px]">{t.project_name}</span>}
 

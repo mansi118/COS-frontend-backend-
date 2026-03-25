@@ -7,7 +7,7 @@ from typing import Set
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from database import engine, Base
-from routers import pulse, followups, performance, clients, sprint, briefing, tasks, meetings, vault, email, fireflies, gmail, execute, taskflow, whatsapp, slack, standups
+from routers import pulse, followups, performance, clients, sprint, briefing, tasks, meetings, vault, email, fireflies, gmail, execute, taskflow, whatsapp, slack, standups, voice
 import cos_reader
 
 Base.metadata.create_all(bind=engine)
@@ -39,6 +39,7 @@ app.include_router(taskflow.router)
 app.include_router(whatsapp.router)
 app.include_router(slack.router)
 app.include_router(standups.router)
+app.include_router(voice.router)
 
 
 @app.get("/")
@@ -64,6 +65,7 @@ DIR_TYPE_MAP = {
     "vault": "vault_update",
     "config": "config_update",
     "standups": "standup_update",
+    "voice": "voice_update",
 }
 
 

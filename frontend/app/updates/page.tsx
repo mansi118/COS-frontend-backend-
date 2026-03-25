@@ -12,6 +12,8 @@ interface Standup {
   mood: string; highlights: string[];
   linked_tasks?: string[];
   doing_priorities?: Record<string, string>;
+  source?: string;
+  source_id?: string;
   created_at: string; updated_at: string;
 }
 interface Stats {
@@ -350,6 +352,13 @@ export default function UpdatesPage() {
                           );
                         })}
                       </div>
+
+                      {/* Voice source badge */}
+                      {s.source === 'voice' && (
+                        <a href="/voice" onClick={(e) => e.stopPropagation()}
+                          className="text-[9px] px-1.5 py-0.5 rounded font-medium mt-1 inline-block hover:opacity-80"
+                          style={{ background: 'rgba(168,85,247,0.1)', color: '#a78bfa' }}>🎙 Voice Update</a>
+                      )}
 
                       {/* Linked FU/Task badges */}
                       {(linkedFUs.length > 0 || linkedTasks.length > 0) && (

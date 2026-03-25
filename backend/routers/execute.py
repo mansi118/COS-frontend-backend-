@@ -104,6 +104,15 @@ ACTION_MAP = {
     "delete_task": (
         "Delete task {task_id} permanently."
     ),
+    "transcribe_voice": (
+        "Transcribe the voice recording at {audio_key}. Return only the transcript text."
+    ),
+    "list_voice_updates": (
+        "List voice updates for {who} from {date}."
+    ),
+    "route_voice_update": (
+        "Route voice update {vu_id} to {target_type}."
+    ),
     "toggle_checklist_item": (
         "Toggle checklist item {item_index} on follow-up {fu_id}. "
         "If unchecked, mark as completed. If checked, uncheck it. "

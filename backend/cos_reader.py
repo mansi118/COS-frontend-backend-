@@ -74,6 +74,37 @@ def increment_followup_counter() -> int:
     return current
 
 
+# ---------- Voice Updates ----------
+
+def get_all_voice_updates() -> list[dict]:
+    """Read all VU-*.json files from data/voice/."""
+    return _read_all_in_dir(os.path.join(DATA_DIR, "voice"), prefix="VU-")
+
+
+def get_voice_update(vu_id: str) -> Optional[dict]:
+    """Read a single voice update by ID (e.g. VU-0001)."""
+    return _read_json(os.path.join(DATA_DIR, "voice", f"{vu_id}.json"))
+
+
+def write_voice_update(vu_id: str, data: dict):
+    """Write a voice update JSON file."""
+    _write_json(os.path.join(DATA_DIR, "voice", f"{vu_id}.json"), data)
+
+
+def get_voice_counter() -> int:
+    """Get the next voice update counter value."""
+    counter = _read_json(os.path.join(DATA_DIR, "voice", "counter.json"))
+    return counter.get("next", 1) if counter else 1
+
+
+def increment_voice_counter() -> int:
+    """Increment and return the next voice update counter."""
+    counter_path = os.path.join(DATA_DIR, "voice", "counter.json")
+    current = get_voice_counter()
+    _write_json(counter_path, {"next": current + 1})
+    return current
+
+
 # ---------- Clients ----------
 
 def get_all_clients() -> list[dict]:
