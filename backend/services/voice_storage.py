@@ -38,11 +38,11 @@ def _use_s3() -> bool:
 
 
 def _generate_key(who: str, update_type: str, ext: str = "webm") -> str:
-    """Generate storage key: voice/2026-03-24/shivam-standup-0901.webm"""
+    """Generate storage key: pulse-voice/2026-03-24/shivam-standup-0901.webm"""
     now = datetime.now()
     date_str = now.strftime("%Y-%m-%d")
     time_str = now.strftime("%H%M")
-    return f"voice/{date_str}/{who}-{update_type}-{time_str}.{ext}"
+    return f"pulse-voice/{date_str}/{who}-{update_type}-{time_str}.{ext}"
 
 
 async def save_audio(file_data: bytes, who: str, update_type: str, ext: str = "webm") -> str:
