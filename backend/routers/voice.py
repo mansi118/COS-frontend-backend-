@@ -187,6 +187,16 @@ async def upload_voice(
     }
 
 
+@router.get("/config")
+def get_voice_config():
+    """Voice feature configuration status."""
+    return {
+        "storage_mode": get_storage_mode(),
+        "s3_configured": get_storage_mode() == "s3",
+        "total_updates": len(cos_reader.get_all_voice_updates()),
+    }
+
+
 @router.get("/feed")
 def get_voice_feed(
     who: str = Query(None),
@@ -382,13 +392,3 @@ def delete_voice_update(vu_id: str, db: Session = Depends(get_db)):
         pass
 
     return {"deleted": True, "vu_id": vu_id}
-
-
-@router.get("/config")
-def get_voice_config():
-    """Voice feature configuration status."""
-    return {
-        "storage_mode": get_storage_mode(),
-        "s3_configured": get_storage_mode() == "s3",
-        "total_updates": len(cos_reader.get_all_voice_updates()),
-    }
