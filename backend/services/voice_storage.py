@@ -82,10 +82,11 @@ def get_audio_url(key: str) -> Optional[str]:
         except Exception:
             return None
 
-    # Local fallback — return relative path for backend to serve
+    # Local fallback — return full backend URL for frontend to reach
     local_path = os.path.join(LOCAL_VOICE_DIR, key.replace("voice/", ""))
+    backend_url = os.getenv("BACKEND_URL", "http://localhost:8000")
     if os.path.exists(local_path):
-        return f"/api/voice/stream/{key}"
+        return f"{backend_url}/api/voice/stream/{key}"
     return None
 
 
