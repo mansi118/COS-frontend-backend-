@@ -6,10 +6,9 @@ import re
 import urllib.request
 from datetime import datetime, timedelta
 from typing import Optional
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Query
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
-from database import get_db
+import convex_db
 from routers.email import send_email
 import cos_reader
 import standup_fanout
@@ -210,7 +209,7 @@ def search_transcripts(keyword: str = Query(...), limit: int = Query(10, le=50))
 def auto_extract_mom(
     days: int = Query(7, le=90),
     limit: int = Query(10, le=20),
-    db: Session = Depends(get_db),
+    ,
 ):
     """Auto-extract action items from recent Fireflies transcripts into follow-ups.
     Idempotent — skips transcripts that have already been processed."""

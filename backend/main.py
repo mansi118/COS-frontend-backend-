@@ -6,11 +6,16 @@ from typing import Set
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from database import engine, Base
 from routers import pulse, followups, performance, clients, sprint, briefing, tasks, meetings, vault, email, fireflies, gmail, execute, taskflow, whatsapp, slack, standups, voice
 import cos_reader
+import convex_db
 
-Base.metadata.create_all(bind=engine)
+# Initialize DB tables if PostgreSQL is available (legacy fallback)
+try:
+    from database import engine, Base
+    Base.metadata.create_all(bind=engine)
+except Exception:
+    print("[STARTUP] PostgreSQL not available — using Convex/CoS JSON only")
 
 app = FastAPI(title="NeuralEDGE CoS Dashboard API", version="1.0.0")
 

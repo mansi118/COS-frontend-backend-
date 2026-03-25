@@ -3,12 +3,10 @@
 import os
 from datetime import datetime, date
 from typing import Optional
-from fastapi import APIRouter, Depends, Query, UploadFile, File, Form, BackgroundTasks
+from fastapi import APIRouter, Query, UploadFile, File, Form, BackgroundTasks
 from fastapi.responses import FileResponse
-from sqlalchemy.orm import Session
-from database import get_db
-from models import VoiceUpdate
 import cos_reader
+import convex_db
 from services.voice_storage import save_audio, get_audio_url, delete_audio, get_local_path, get_storage_mode
 
 router = APIRouter(prefix="/api/voice", tags=["voice"])
@@ -43,7 +41,7 @@ def _vu_to_api(vu: dict) -> dict:
 
 # --- Background transcription ---
 
-def _transcribe_background(vu_id: str, audio_key: str, db_url: str):
+def _transcribe_background(vu_id: str, audio_key: str, unused: str):
     """Background task: transcribe audio via OpenClaw and update the record."""
     import asyncio
     import gateway
@@ -59,7 +57,6 @@ def _transcribe_background(vu_id: str, audio_key: str, db_url: str):
         loop = asyncio.new_event_loop()
         result = loop.run_until_complete(gateway.execute(instruction))
         loop.close()
-
         transcript = result.get("result", "") if result.get("success") else None
     except Exception:
         transcript = None
@@ -75,119 +72,22 @@ def _transcribe_background(vu_id: str, audio_key: str, db_url: str):
         vu["updated_at"] = datetime.utcnow().isoformat()
         cos_reader.write_voice_update(vu_id, vu)
 
-    # Update DB
-    db = None
-    try:
-        from database import SessionLocal
-        db = SessionLocal()
-        db_vu = db.query(VoiceUpdate).filter(VoiceUpdate.vu_id == vu_id).first()
-        if db_vu:
-            db_vu.transcript = transcript
-            db_vu.summary = transcript[:100].strip() + ("..." if len(transcript) > 100 else "")
-            db.commit()
-    except Exception:
-        pass
+    # Update Convex
+    convex_db.update_voice_update(vu_id, {
+        "transcript": transcript,
+        "summary": transcript[:100].strip() + ("..." if len(transcript) > 100 else ""),
+        "updated_at": datetime.utcnow().isoformat(),
+    })
 
     # Auto-route based on voice update type
     try:
         from services.voice_router import auto_route
-        if db is None:
-            from database import SessionLocal
-            db = SessionLocal()
-        auto_route(vu_id, db)
+        auto_route(vu_id)
     except Exception:
         pass
-    finally:
-        if db:
-            try:
-                db.close()
-            except Exception:
-                pass
 
 
 # --- Endpoints ---
-
-@router.post("/upload")
-async def upload_voice(
-    background_tasks: BackgroundTasks,
-    audio: UploadFile = File(...),
-    who: str = Form(...),
-    type: str = Form("general"),
-    tags: str = Form(""),
-    db: Session = Depends(get_db),
-):
-    """Upload voice recording → save audio → create record → background transcribe."""
-    # Generate ID
-    vu_num = cos_reader.increment_voice_counter()
-    vu_id = f"VU-{vu_num:04d}"
-    now = datetime.utcnow().isoformat()
-
-    # Determine audio format from content type
-    ext = "webm"
-    if audio.content_type:
-        if "mp3" in audio.content_type or "mpeg" in audio.content_type:
-            ext = "mp3"
-        elif "wav" in audio.content_type:
-            ext = "wav"
-        elif "ogg" in audio.content_type:
-            ext = "ogg"
-
-    # Save audio to storage (S3 or local)
-    audio_data = await audio.read()
-    audio_key = await save_audio(audio_data, who, type, ext)
-
-    # Parse tags
-    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
-
-    # Create CoS JSON record
-    vu_data = {
-        "id": vu_id,
-        "who": who,
-        "type": type,
-        "audio_url": audio_key,
-        "audio_format": ext,
-        "duration_sec": None,  # Could be extracted from audio metadata
-        "transcript": None,  # Filled by background task
-        "summary": None,
-        "routed_to": [],
-        "listened_by": [],
-        "priority": "P2",
-        "tags": tag_list,
-        "created_at": now,
-        "updated_at": now,
-        "events": [
-            {"timestamp": now, "action": "recorded", "actor": who},
-        ],
-    }
-    cos_reader.write_voice_update(vu_id, vu_data)
-
-    # Write to DB
-    try:
-        db_vu = VoiceUpdate(
-            vu_id=vu_id,
-            who=who,
-            type=type,
-            audio_url=audio_key,
-            audio_format=ext,
-            priority="P2",
-            tags=tag_list,
-        )
-        db.add(db_vu)
-        db.commit()
-    except Exception:
-        pass
-
-    # Background: transcribe via OpenClaw
-    background_tasks.add_task(_transcribe_background, vu_id, audio_key, "")
-
-    return {
-        "vu_id": vu_id,
-        "status": "uploaded",
-        "transcribing": True,
-        "audio_url": get_audio_url(audio_key),
-        "storage_mode": get_storage_mode(),
-    }
-
 
 @router.get("/config")
 def get_voice_config():
@@ -216,7 +116,6 @@ def get_voice_feed(
     if date_str:
         updates = [v for v in updates if (v.get("created_at", "")[:10] or "") == date_str]
 
-    # Sort by created_at desc
     updates.sort(key=lambda v: v.get("created_at", ""), reverse=True)
     updates = updates[:limit]
 
@@ -236,7 +135,6 @@ def get_voice_stats():
     today_updates = [v for v in updates if (v.get("created_at", "")[:10] or "") == today_str]
     unlistened = len([v for v in updates if not v.get("listened_by")])
 
-    # Per-person counts
     by_person = {}
     for v in updates:
         who = v.get("who", "unknown")
@@ -253,6 +151,76 @@ def get_voice_stats():
             "blocker": len([v for v in updates if v.get("type") == "blocker"]),
             "general": len([v for v in updates if v.get("type") == "general"]),
         },
+    }
+
+
+@router.post("/upload")
+async def upload_voice(
+    background_tasks: BackgroundTasks,
+    audio: UploadFile = File(...),
+    who: str = Form(...),
+    type: str = Form("general"),
+    tags: str = Form(""),
+):
+    """Upload voice recording → save audio → create record → background transcribe."""
+    vu_num = cos_reader.increment_voice_counter()
+    vu_id = f"VU-{vu_num:04d}"
+    now = datetime.utcnow().isoformat()
+
+    ext = "webm"
+    if audio.content_type:
+        if "mp3" in audio.content_type or "mpeg" in audio.content_type:
+            ext = "mp3"
+        elif "wav" in audio.content_type:
+            ext = "wav"
+        elif "ogg" in audio.content_type:
+            ext = "ogg"
+
+    audio_data = await audio.read()
+    audio_key = await save_audio(audio_data, who, type, ext)
+
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+
+    vu_data = {
+        "id": vu_id,
+        "who": who,
+        "type": type,
+        "audio_url": audio_key,
+        "audio_format": ext,
+        "duration_sec": None,
+        "transcript": None,
+        "summary": None,
+        "routed_to": [],
+        "listened_by": [],
+        "priority": "P2",
+        "tags": tag_list,
+        "created_at": now,
+        "updated_at": now,
+        "events": [{"timestamp": now, "action": "recorded", "actor": who}],
+    }
+    cos_reader.write_voice_update(vu_id, vu_data)
+
+    # Write to Convex
+    convex_db.insert_voice_update({
+        "vu_id": vu_id,
+        "who": who,
+        "type": type,
+        "audio_url": audio_key,
+        "audio_format": ext,
+        "priority": "P2",
+        "tags": tag_list,
+        "created_at": now,
+        "updated_at": now,
+    })
+
+    background_tasks.add_task(_transcribe_background, vu_id, audio_key, "")
+
+    return {
+        "vu_id": vu_id,
+        "status": "uploaded",
+        "transcribing": True,
+        "audio_url": get_audio_url(audio_key),
+        "storage_mode": get_storage_mode(),
     }
 
 
@@ -280,7 +248,7 @@ def stream_audio(path: str):
 
 
 @router.patch("/{vu_id}/listened")
-def mark_listened(vu_id: str, user: str = Query(...), db: Session = Depends(get_db)):
+def mark_listened(vu_id: str, user: str = Query(...)):
     """Mark voice update as listened by a user."""
     vu = cos_reader.get_voice_update(vu_id)
     if not vu:
@@ -298,24 +266,13 @@ def mark_listened(vu_id: str, user: str = Query(...), db: Session = Depends(get_
         })
         cos_reader.write_voice_update(vu_id, vu)
 
-    # Update DB
-    try:
-        db_vu = db.query(VoiceUpdate).filter(VoiceUpdate.vu_id == vu_id).first()
-        if db_vu:
-            db_vu.listened_by = listened
-            db.commit()
-    except Exception:
-        pass
+    convex_db.update_voice_update(vu_id, {"listened_by": listened, "updated_at": datetime.utcnow().isoformat()})
 
     return {"vu_id": vu_id, "listened_by": listened}
 
 
 @router.post("/{vu_id}/route")
-def route_voice_update(
-    vu_id: str,
-    target_type: str = Form(...),  # followup | task
-    db: Session = Depends(get_db),
-):
+def route_voice_update(vu_id: str, target_type: str = Form(...)):
     """Manually route a voice update to a follow-up or task."""
     vu = cos_reader.get_voice_update(vu_id)
     if not vu:
@@ -332,9 +289,7 @@ def route_voice_update(
         fu_id = standup_fanout.create_followup_from_standup(
             vu.get("who", "unknown"),
             datetime.utcnow().strftime("%Y-%m-%d"),
-            transcript,
-            None,
-            db,
+            transcript, None, None,
         )
         if fu_id:
             routed.append({"type": "followup", "id": fu_id})
@@ -355,28 +310,19 @@ def route_voice_update(
     vu["updated_at"] = datetime.utcnow().isoformat()
     cos_reader.write_voice_update(vu_id, vu)
 
-    # Update DB
-    try:
-        db_vu = db.query(VoiceUpdate).filter(VoiceUpdate.vu_id == vu_id).first()
-        if db_vu:
-            db_vu.routed_to = routed
-            db.commit()
-    except Exception:
-        pass
+    convex_db.update_voice_update(vu_id, {"routed_to": routed, "updated_at": datetime.utcnow().isoformat()})
 
     return {"vu_id": vu_id, "routed_to": routed}
 
 
 @router.delete("/{vu_id}")
-def delete_voice_update(vu_id: str, db: Session = Depends(get_db)):
+def delete_voice_update(vu_id: str):
     """Delete voice update + audio file."""
     vu = cos_reader.get_voice_update(vu_id)
 
-    # Delete audio file
     if vu and vu.get("audio_url"):
         delete_audio(vu["audio_url"])
 
-    # Delete CoS JSON
     vu_path = os.path.join(
         os.getenv("COS_WORKSPACE", os.path.expanduser("~/.openclaw/workspace")),
         "data", "voice", f"{vu_id}.json"
@@ -384,13 +330,6 @@ def delete_voice_update(vu_id: str, db: Session = Depends(get_db)):
     if os.path.exists(vu_path):
         os.remove(vu_path)
 
-    # Delete from DB
-    try:
-        db_vu = db.query(VoiceUpdate).filter(VoiceUpdate.vu_id == vu_id).first()
-        if db_vu:
-            db.delete(db_vu)
-            db.commit()
-    except Exception:
-        pass
+    convex_db.delete_voice_update(vu_id)
 
     return {"deleted": True, "vu_id": vu_id}

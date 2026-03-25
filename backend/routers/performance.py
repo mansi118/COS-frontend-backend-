@@ -1,9 +1,16 @@
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy.orm import Session
-from database import get_db
+from fastapi import APIRouter, Query
+import convex_db
 from models import PerformanceSnapshot, TeamMember
 from schemas import PerformanceOut
 import cos_reader
+
+# Optional DB fallback (PostgreSQL)
+try:
+    from database import get_db as _get_db
+    from sqlalchemy.orm import Session as _Session
+    _DB_AVAILABLE = True
+except Exception:
+    _DB_AVAILABLE = False
 
 router = APIRouter(prefix="/api/performance", tags=["performance"])
 
@@ -11,7 +18,7 @@ router = APIRouter(prefix="/api/performance", tags=["performance"])
 @router.get("/report")
 def get_performance_report(
     period: str = Query("biweekly"),
-    db: Session = Depends(get_db),
+    ,
 ):
     # Primary: CoS workspace
     perf_data = cos_reader.get_performance_data()
@@ -67,7 +74,7 @@ def get_performance_report(
 
 
 @router.get("/flag")
-def get_flagged_performers(db: Session = Depends(get_db)):
+def get_flagged_performers():
     # Primary: CoS workspace
     perf_data = cos_reader.get_performance_data()
     roster = cos_reader.get_team_roster()
@@ -109,7 +116,7 @@ def get_flagged_performers(db: Session = Depends(get_db)):
 
 
 @router.get("/{person}")
-def get_person_performance(person: str, db: Session = Depends(get_db)):
+def get_person_performance(person: str):
     # Primary: CoS workspace
     perf = cos_reader.get_person_performance(person)
     roster = cos_reader.get_team_roster()
@@ -162,7 +169,7 @@ def get_person_performance(person: str, db: Session = Depends(get_db)):
 
 
 @router.get("/{person}/history")
-def get_person_history(person: str, db: Session = Depends(get_db)):
+def get_person_history(person: str):
     # Primary: CoS workspace — collect all evaluation files for this person
     perf = cos_reader.get_person_performance(person)
     if perf:

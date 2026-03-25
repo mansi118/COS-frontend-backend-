@@ -1,13 +1,11 @@
 """Daily standup updates — post, view, stats, reminders."""
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Query
 from pydantic import BaseModel
 from typing import Optional
-from sqlalchemy.orm import Session
 import standup_local
 import standup_fanout
 import cos_reader
-from database import get_db
 
 router = APIRouter(prefix="/api/standups", tags=["standups"])
 
@@ -30,19 +28,19 @@ class StandupUpdate(BaseModel):
 
 
 @router.post("")
-def post_standup(data: StandupPost, db: Session = Depends(get_db)):
+def post_standup(data: StandupPost, ):
     standup = standup_local.post_standup(data.person, data.model_dump())
 
     # Fanout: create follow-up + task from doing items
     fu_id = standup_fanout.create_followup_from_standup(
-        data.person, standup["date"], data.doing or "", data.blockers, db
+        data.person, standup["date"], data.doing or "", data.blockers, None
     )
     task_id = standup_fanout.create_task_from_standup(
         data.person, standup["date"], data.doing or ""
     )
 
     # Suggest resolutions from done items
-    suggestions = standup_fanout.suggest_resolutions(data.person, data.done, db)
+    suggestions = standup_fanout.suggest_resolutions(data.person, data.done)
 
     # Link created FU/task IDs back to standup
     linked = [x for x in [fu_id, task_id] if x]
@@ -67,12 +65,12 @@ def update_standup(person: str, data: StandupUpdate):
 
 
 @router.get("/suggestions/{person}")
-def get_suggestions(person: str, db: Session = Depends(get_db)):
+def get_suggestions(person: str, ):
     """Get pending resolution suggestions for a person's latest done text."""
     standup = standup_local.get_standup(person)
     if not standup:
         return {"suggestions": []}
-    return {"suggestions": standup_fanout.suggest_resolutions(person, standup.get("done", ""), db)}
+    return {"suggestions": standup_fanout.suggest_resolutions(person, standup.get("done", ""))}
 
 
 @router.get("/today")
@@ -106,7 +104,7 @@ class PriorityUpdate(BaseModel):
 
 
 @router.put("/{person}/priorities")
-def update_priorities(person: str, data: PriorityUpdate, db: Session = Depends(get_db)):
+def update_priorities(person: str, data: PriorityUpdate, ):
     """Update priorities of doing items in linked follow-up and task."""
     standup = standup_local.get_standup(person)
     if not standup:
@@ -142,9 +140,9 @@ class ResolveSuggestion(BaseModel):
 
 
 @router.post("/resolve-suggestion")
-def confirm_resolution(data: ResolveSuggestion, db: Session = Depends(get_db)):
+def confirm_resolution(data: ResolveSuggestion, ):
     """Confirm a suggested resolution — mark checklist item or whole FU as resolved."""
-    return standup_fanout.confirm_checklist_resolution(data.fu_id, data.item_index, db)
+    return standup_fanout.confirm_checklist_resolution(data.fu_id, data.item_index)
 
 
 @router.post("/remind")

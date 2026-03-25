@@ -5,7 +5,7 @@ from typing import Optional
 import cos_reader
 
 
-def auto_route(vu_id: str, db=None) -> list[dict]:
+def auto_route(vu_id: str, db=None) -> list[dict]:  # db param kept for backwards compat but unused
     """Auto-route a voice update based on its type. Call after transcription is done.
     Returns list of routes created: [{"type": "followup", "id": "FU-0042"}, ...]"""
     vu = cos_reader.get_voice_update(vu_id)
@@ -39,13 +39,10 @@ def auto_route(vu_id: str, db=None) -> list[dict]:
         })
         cos_reader.write_voice_update(vu_id, vu)
 
-        # Update DB
+        # Update Convex
         try:
-            from models import VoiceUpdate as VoiceUpdateModel
-            db_vu = db.query(VoiceUpdateModel).filter(VoiceUpdateModel.vu_id == vu_id).first()
-            if db_vu:
-                db_vu.routed_to = vu["routed_to"]
-                db.commit()
+            import convex_db
+            convex_db.update_voice_update(vu_id, {"routed_to": vu["routed_to"]})
         except Exception:
             pass
 
@@ -125,22 +122,15 @@ def _route_blocker(vu_id: str, who: str, transcript: str, db) -> list[dict]:
     }
     cos_reader.write_followup(fu_id, cos_data)
 
-    # DB write
+    # Convex write
     try:
-        from models import Followup
-        fu_db = Followup(
-            fu_id=fu_id,
-            what=f"BLOCKER: {first_sentence}",
-            who=who,
-            due=datetime.utcnow().date(),
-            priority="P0",
-            status="open",
-            source="voice",
-            source_id=vu_id,
-            notes=transcript,
-        )
-        db.add(fu_db)
-        db.commit()
+        import convex_db
+        convex_db.insert_followup({
+            "fu_id": fu_id, "what": f"BLOCKER: {first_sentence}", "who": who,
+            "due": datetime.utcnow().strftime("%Y-%m-%d"), "priority": "P0",
+            "status": "open", "source": "voice", "source_id": vu_id,
+            "notes": transcript, "created_at": now, "updated_at": now,
+        })
     except Exception:
         pass
 
@@ -148,7 +138,7 @@ def _route_blocker(vu_id: str, who: str, transcript: str, db) -> list[dict]:
     return routes
 
 
-def _route_meeting_note(vu_id: str, who: str, transcript: str, db) -> list[dict]:
+def _route_meeting_note(vu_id: str, who: str, transcript: str, db=None) -> list[dict]:
     """Route voice meeting note → create follow-up with transcript as content."""
     routes = []
 
@@ -181,23 +171,16 @@ def _route_meeting_note(vu_id: str, who: str, transcript: str, db) -> list[dict]
     }
     cos_reader.write_followup(fu_id, cos_data)
 
-    # DB write
+    # Convex write
     try:
-        from models import Followup
-        fu_db = Followup(
-            fu_id=fu_id,
-            what=f"Voice note — {first_sentence}",
-            who=who,
-            due=datetime.utcnow().date(),
-            priority="P2",
-            status="open",
-            source="voice",
-            source_id=vu_id,
-            notes=transcript,
-            checklist=checklist if checklist else None,
-        )
-        db.add(fu_db)
-        db.commit()
+        import convex_db
+        convex_db.insert_followup({
+            "fu_id": fu_id, "what": f"Voice note — {first_sentence}", "who": who,
+            "due": datetime.utcnow().strftime("%Y-%m-%d"), "priority": "P2",
+            "status": "open", "source": "voice", "source_id": vu_id,
+            "notes": transcript, "checklist": checklist if checklist else None,
+            "created_at": now, "updated_at": now,
+        })
     except Exception:
         pass
 

@@ -1,10 +1,17 @@
 from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
-from database import get_db
+import convex_db
 from models import Client, ClientContact
 from schemas import ClientCreate, ClientUpdate, ClientOut
 from datetime import datetime
 import cos_reader
+
+# Optional DB fallback (PostgreSQL)
+try:
+    from database import get_db as _get_db
+    from sqlalchemy.orm import Session as _Session
+    _DB_AVAILABLE = True
+except Exception:
+    _DB_AVAILABLE = False
 
 router = APIRouter(prefix="/api/clients", tags=["clients"])
 
@@ -31,7 +38,7 @@ def _cos_to_api(c: dict, idx: int = 0) -> dict:
 
 
 @router.get("")
-def list_clients(db: Session = Depends(get_db)):
+def list_clients():
     # Primary: CoS workspace
     cos_clients = cos_reader.get_all_clients()
     if cos_clients:
@@ -44,7 +51,7 @@ def list_clients(db: Session = Depends(get_db)):
 
 
 @router.get("/health")
-def get_at_risk_clients(db: Session = Depends(get_db)):
+def get_at_risk_clients():
     # Primary: CoS workspace
     cos_clients = cos_reader.get_all_clients()
     if cos_clients:
@@ -81,7 +88,7 @@ def get_at_risk_clients(db: Session = Depends(get_db)):
 
 
 @router.get("/{slug}")
-def get_client(slug: str, db: Session = Depends(get_db)):
+def get_client(slug: str):
     # Primary: CoS workspace
     cos_client = cos_reader.get_client(slug)
     if cos_client:
@@ -95,7 +102,7 @@ def get_client(slug: str, db: Session = Depends(get_db)):
 
 
 @router.post("")
-def create_client(data: ClientCreate, db: Session = Depends(get_db)):
+def create_client(data: ClientCreate):
     now = datetime.utcnow().isoformat()
 
     # Write to CoS workspace
@@ -126,7 +133,7 @@ def create_client(data: ClientCreate, db: Session = Depends(get_db)):
 
 
 @router.put("/{slug}")
-def update_client(slug: str, data: ClientUpdate, db: Session = Depends(get_db)):
+def update_client(slug: str, data: ClientUpdate):
     updates = data.model_dump(exclude_unset=True)
 
     # Update CoS workspace

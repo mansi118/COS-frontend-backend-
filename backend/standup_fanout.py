@@ -141,27 +141,25 @@ def create_followup_from_standup(
     }
     cos_reader.write_followup(fu_id, cos_data)
 
-    # Also write to DB if session available
+    # Also write to Convex (replaces PostgreSQL)
     try:
-        from models import Followup as FollowupModel
-        from datetime import date as date_type
-
-        fu_db = FollowupModel(
-            fu_id=fu_id,
-            what=f"Daily commitments — {person_name}",
-            who=person,
-            due=date_type.fromisoformat(date_str),
-            priority=_highest_priority(items),
-            status="open",
-            source="standup",
-            source_id=source_id,
-            notes=f"Auto-created from standup on {date_str}",
-            checklist=checklist,
-        )
-        db.add(fu_db)
-        db.commit()
+        import convex_db
+        convex_db.insert_followup({
+            "fu_id": fu_id,
+            "what": f"Daily commitments — {person_name}",
+            "who": person,
+            "due": date_str,
+            "priority": _highest_priority(items),
+            "status": "open",
+            "source": "standup",
+            "source_id": source_id,
+            "notes": f"Auto-created from standup on {date_str}",
+            "checklist": checklist,
+            "created_at": now,
+            "updated_at": now,
+        })
     except Exception:
-        pass  # DB write is best-effort; CoS JSON is source of truth
+        pass  # Convex write is best-effort; CoS JSON is source of truth
 
     return fu_id
 
@@ -308,25 +306,23 @@ def create_followups_from_meeting(
     }
     cos_reader.write_followup(fu_id, cos_data)
 
-    # DB write
+    # Convex write
     try:
-        from models import Followup as FollowupModel
-        from datetime import date as date_type
-
-        fu_db = FollowupModel(
-            fu_id=fu_id,
-            what=f"Meeting action items — {title}",
-            who=None,
-            due=date_type.fromisoformat(due),
-            priority=_highest_priority(checklist),
-            status="open",
-            source="meeting",
-            source_id=transcript_id,
-            notes=f"Auto-extracted from meeting on {meeting_date}",
-            checklist=checklist,
-        )
-        db.add(fu_db)
-        db.commit()
+        import convex_db
+        convex_db.insert_followup({
+            "fu_id": fu_id,
+            "what": f"Meeting action items — {title}",
+            "who": None,
+            "due": due,
+            "priority": _highest_priority(checklist),
+            "status": "open",
+            "source": "meeting",
+            "source_id": transcript_id,
+            "notes": f"Auto-extracted from meeting on {meeting_date}",
+            "checklist": checklist,
+            "created_at": now,
+            "updated_at": now,
+        })
     except Exception:
         pass
 
@@ -405,19 +401,17 @@ def confirm_checklist_resolution(fu_id: str, item_index: int, db=None) -> dict:
 
     cos_reader.write_followup(fu_id, fu)
 
-    # Update DB too
+    # Update Convex
     try:
-        from models import Followup as FollowupModel
-        db_fu = db.query(FollowupModel).filter(FollowupModel.fu_id == fu_id).first()
-        if db_fu:
-            db_fu.checklist = checklist
-            if all_done:
-                db_fu.status = "resolved"
-                db_fu.resolved_at = datetime.utcnow()
-            elif was_completed:
-                db_fu.status = "open"
-                db_fu.resolved_at = None
-            db.commit()
+        import convex_db
+        updates = {"checklist": checklist, "updated_at": datetime.utcnow().isoformat()}
+        if all_done:
+            updates["status"] = "resolved"
+            updates["resolved_at"] = datetime.utcnow().isoformat()
+        elif was_completed:
+            updates["status"] = "open"
+            updates["resolved_at"] = None
+        convex_db.update_followup(fu_id, updates)
     except Exception:
         pass
 

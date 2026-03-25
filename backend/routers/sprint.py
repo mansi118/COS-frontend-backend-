@@ -1,6 +1,5 @@
-from fastapi import APIRouter, Depends, BackgroundTasks
-from sqlalchemy.orm import Session
-from database import get_db
+from fastapi import APIRouter, BackgroundTasks
+import convex_db
 from models import Sprint, Followup, TeamMember, SprintUpdate, NotificationLog
 from schemas import SprintCreate, SprintOut, SprintUpdateCreate, SprintUpdateOut, SendUpdatesRequest
 from datetime import date, datetime, timedelta
@@ -11,6 +10,14 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import cos_reader
 import standup_local
+
+# Optional DB fallback (PostgreSQL)
+try:
+    from database import get_db as _get_db
+    from sqlalchemy.orm import Session as _Session
+    _DB_AVAILABLE = True
+except Exception:
+    _DB_AVAILABLE = False
 
 router = APIRouter(prefix="/api/sprint", tags=["sprint"])
 
@@ -141,7 +148,7 @@ def _do_send_updates(update_ids: list[int], channel: str, db_url: str):
 # --- Sprint endpoints ---
 
 @router.get("")
-def get_current_sprint(db: Session = Depends(get_db)):
+def get_current_sprint():
     today = date.today()
 
     # Primary: CoS workspace
@@ -240,7 +247,7 @@ def get_current_sprint(db: Session = Depends(get_db)):
 
 
 @router.get("/burndown")
-def get_burndown(db: Session = Depends(get_db)):
+def get_burndown():
     today = date.today()
 
     # Primary: CoS workspace
@@ -375,7 +382,7 @@ def get_sprint_standup_activity():
 
 
 @router.post("/updates/auto-generate")
-def auto_generate_weekly_updates(db: Session = Depends(get_db)):
+def auto_generate_weekly_updates():
     """Auto-generate weekly updates from daily standups for the current week."""
     sprint = db.query(Sprint).filter(Sprint.status == "active").first()
     if not sprint:
@@ -472,7 +479,7 @@ def auto_generate_weekly_updates(db: Session = Depends(get_db)):
 
 
 @router.post("", response_model=SprintOut)
-def create_sprint(data: SprintCreate, db: Session = Depends(get_db)):
+def create_sprint(data: SprintCreate):
     active = db.query(Sprint).filter(Sprint.status == "active").first()
     if active:
         active.status = "closed"
@@ -487,7 +494,7 @@ def create_sprint(data: SprintCreate, db: Session = Depends(get_db)):
 # --- Weekly Updates ---
 
 @router.get("/updates", response_model=list[SprintUpdateOut])
-def list_sprint_updates(week: str = None, person: str = None, db: Session = Depends(get_db)):
+def list_sprint_updates(week: str = None, person: str = None):
     sprint = db.query(Sprint).filter(Sprint.status == "active").first()
     if not sprint:
         return []
@@ -500,7 +507,7 @@ def list_sprint_updates(week: str = None, person: str = None, db: Session = Depe
 
 
 @router.post("/updates", response_model=SprintUpdateOut)
-def create_sprint_update(data: SprintUpdateCreate, db: Session = Depends(get_db)):
+def create_sprint_update(data: SprintUpdateCreate):
     sprint = db.query(Sprint).filter(Sprint.status == "active").first()
     if not sprint:
         return {"error": "No active sprint"}
@@ -526,7 +533,7 @@ def create_sprint_update(data: SprintUpdateCreate, db: Session = Depends(get_db)
 
 
 @router.get("/updates/by-week")
-def get_updates_grouped_by_week(db: Session = Depends(get_db)):
+def get_updates_grouped_by_week():
     sprint = db.query(Sprint).filter(Sprint.status == "active").first()
     if not sprint:
         return {"weeks": []}
@@ -559,7 +566,7 @@ def get_updates_grouped_by_week(db: Session = Depends(get_db)):
 # --- Auto-send notifications ---
 
 @router.post("/updates/send")
-def send_sprint_updates(req: SendUpdatesRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def send_sprint_updates(req: SendUpdatesRequest, background_tasks: BackgroundTasks):
     """Send all updates for a given week (or latest) via Slack and/or email."""
     sprint = db.query(Sprint).filter(Sprint.status == "active").first()
     if not sprint:
@@ -590,7 +597,7 @@ def send_sprint_updates(req: SendUpdatesRequest, background_tasks: BackgroundTas
 
 
 @router.get("/updates/notifications")
-def get_notification_history(db: Session = Depends(get_db)):
+def get_notification_history():
     """Get notification send history."""
     logs = db.query(NotificationLog).order_by(NotificationLog.sent_at.desc()).limit(50).all()
     return [

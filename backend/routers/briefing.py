@@ -1,15 +1,22 @@
 from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
-from database import get_db
+import convex_db
 from models import Followup, TeamMember, Client, Sprint, PerformanceSnapshot
 from datetime import date
 import cos_reader
+
+# Optional DB fallback (PostgreSQL)
+try:
+    from database import get_db as _get_db
+    from sqlalchemy.orm import Session as _Session
+    _DB_AVAILABLE = True
+except Exception:
+    _DB_AVAILABLE = False
 
 router = APIRouter(prefix="/api/briefing", tags=["briefing"])
 
 
 @router.get("/morning")
-def morning_briefing(db: Session = Depends(get_db)):
+def morning_briefing():
     today = date.today()
     today_str = today.isoformat()
 
@@ -146,7 +153,7 @@ def morning_briefing(db: Session = Depends(get_db)):
 
 
 @router.get("/eod")
-def eod_summary(db: Session = Depends(get_db)):
+def eod_summary():
     today = date.today()
     today_str = today.isoformat()
 

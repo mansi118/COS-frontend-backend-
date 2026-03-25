@@ -1,6 +1,5 @@
 from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
-from database import get_db
+import convex_db
 from models import TeamMember, Followup, PerformanceSnapshot, BoardSnapshot
 from datetime import date, timedelta
 import json
@@ -9,6 +8,14 @@ import cos_reader
 
 COS_WORKSPACE = os.getenv("COS_WORKSPACE", "/home/mansigambhir/.openclaw/workspace")
 PULSE_SNAPSHOTS_DIR = os.path.join(COS_WORKSPACE, "data", "pulse-snapshots")
+
+# Optional DB fallback (PostgreSQL)
+try:
+    from database import get_db as _get_db
+    from sqlalchemy.orm import Session as _Session
+    _DB_AVAILABLE = True
+except Exception:
+    _DB_AVAILABLE = False
 
 router = APIRouter(prefix="/api/pulse", tags=["pulse"])
 
@@ -34,7 +41,7 @@ def get_person_health(reliability: int = 0, overdue_count: int = 0, active_count
 
 
 @router.get("")
-def get_pulse_board(db: Session = Depends(get_db)):
+def get_pulse_board():
     today = date.today()
 
     # Try CoS workspace first
@@ -213,7 +220,7 @@ def get_pulse_board(db: Session = Depends(get_db)):
 
 
 @router.get("/summary")
-def get_pulse_summary(db: Session = Depends(get_db)):
+def get_pulse_summary():
     # Try CoS workspace first
     followups = cos_reader.get_all_followups()
     roster = cos_reader.get_team_roster()
@@ -245,7 +252,7 @@ def get_pulse_summary(db: Session = Depends(get_db)):
 
 
 @router.get("/person/{slug}")
-def get_person_detail(slug: str, db: Session = Depends(get_db)):
+def get_person_detail(slug: str):
     today = str(date.today())
 
     # Try CoS workspace first
