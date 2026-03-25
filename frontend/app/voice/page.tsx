@@ -66,6 +66,7 @@ function formatTime(iso: string | undefined): string {
 export default function VoiceFeedPage() {
   const [updates, setUpdates] = useState<VoiceUpdate[]>([]);
   const [stats, setStats] = useState<VoiceStats | null>(null);
+  const [teamMembers, setTeamMembers] = useState<Array<{ slug: string; name: string }>>([]);
   const [filterWho, setFilterWho] = useState('');
   const [filterType, setFilterType] = useState('');
   const [result, setResult] = useState<string | null>(null);
@@ -83,6 +84,9 @@ export default function VoiceFeedPage() {
     if (filterType) url += `&type=${filterType}`;
     fetch(url).then((r) => r.json()).then((d) => setUpdates(d.updates || [])).catch(() => {});
     fetch(`${API}/api/voice/stats`).then((r) => r.json()).then(setStats).catch(() => {});
+    fetch(`${API}/api/pulse`).then((r) => r.json()).then((d) => {
+      if (d.team) setTeamMembers(d.team.map((m: { slug: string; name: string }) => ({ slug: m.slug, name: m.name })));
+    }).catch(() => {});
   };
 
   useEffect(() => { load(); }, [filterWho, filterType]);
@@ -127,7 +131,9 @@ export default function VoiceFeedPage() {
     load();
   };
 
-  const uniqueWhos = Array.from(new Set(updates.map((v) => v.who).filter(Boolean)));
+  const uniqueWhos = teamMembers.length > 0
+    ? teamMembers
+    : Array.from(new Set(updates.map((v) => v.who).filter(Boolean))).map((w) => ({ slug: w!, name: w! }));
 
   return (
     <div className="space-y-6">
@@ -154,7 +160,7 @@ export default function VoiceFeedPage() {
               <label className="text-[11px] font-medium uppercase tracking-wider" style={{ color: '#6b7280' }}>Who *</label>
               <select value={recWho} onChange={(e) => setRecWho(e.target.value)} className="w-full mt-1">
                 <option value="">Select person</option>
-                {uniqueWhos.map((w) => <option key={w} value={w!}>{w}</option>)}
+                {uniqueWhos.map((w) => <option key={w.slug} value={w.slug}>{w.name}</option>)}
               </select>
             </div>
             <div>
@@ -228,7 +234,7 @@ export default function VoiceFeedPage() {
       <div className="flex gap-2">
         <select value={filterWho} onChange={(e) => setFilterWho(e.target.value)} className="text-[12px]">
           <option value="">All People</option>
-          {uniqueWhos.map((w) => <option key={w} value={w!}>{w}</option>)}
+          {uniqueWhos.map((w) => <option key={w.slug} value={w.slug}>{w.name}</option>)}
         </select>
         <select value={filterType} onChange={(e) => setFilterType(e.target.value)} className="text-[12px]">
           <option value="">All Types</option>

@@ -49,8 +49,10 @@ def _transcribe_background(vu_id: str, audio_key: str, db_url: str):
     import gateway
 
     instruction = (
-        f"Transcribe the voice recording stored at {audio_key}. "
-        f"Return only the transcript text, nothing else."
+        f"Use the voice-transcriber skill to transcribe the voice recording at {audio_key}. "
+        f"The audio file is stored locally at data/voice/audio/. "
+        f"Run: python3 ~/.openclaw/workspace/scripts/voice/transcribe.py process --vu-id {vu_id} "
+        f"Then return only the transcript text."
     )
 
     try:
