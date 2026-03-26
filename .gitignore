@@ -19,3 +19,5 @@ pgdata/
 
 # OS
 .DS_Store
+
+.env.local
