@@ -1,4 +1,4 @@
-"""Convex database client — replaces SQLAlchemy/PostgreSQL as the fallback database.
+"""Convex database client — sole data source for the CoS Dashboard.
 
 Usage:
     import convex_db
