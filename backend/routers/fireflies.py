@@ -10,7 +10,6 @@ from typing import Optional
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
 from routers.email import send_email
-import cos_reader
 import standup_fanout
 import convex_db
 import re
@@ -369,7 +368,7 @@ def auto_extract_mom(
             skipped += 1
 
     # Collect all extracted meeting IDs
-    all_fus = cos_reader.get_all_followups()
+    all_fus = convex_db.list_followups() or []
     extracted_ids = [f.get("source_id") for f in all_fus if f.get("source") == "meeting" and f.get("source_id")]
 
     # Auto-send meeting updates to team for newly processed meetings
@@ -429,7 +428,7 @@ def _send_meeting_update_to_team(transcript_id: str, title: str, action_count: i
     subject = f"Meeting Update — {title}"
 
     # Get team emails
-    routes = cos_reader.get_notification_routes()
+    routes = convex_db.get_notification_routes()
     if not routes:
         return {"sent": 0, "error": "No notification routes configured"}
 
@@ -587,7 +586,7 @@ def send_meeting_notes(req: SendNotesRequest):
 @router.post("/send-notes-to-team")
 def send_notes_to_team(transcript_id: str = Query(...)):
     """Email notes to all team members."""
-    routes = cos_reader.get_notification_routes()
+    routes = convex_db.get_notification_routes()
     if not routes:
         return {"error": "notification-routes.json not found"}
     contacts = routes.get("contacts", {})

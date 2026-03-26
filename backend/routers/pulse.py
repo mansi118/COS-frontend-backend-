@@ -1,12 +1,6 @@
 from fastapi import APIRouter
 import convex_db
 from datetime import date, timedelta
-import json
-import os
-import cos_reader
-
-COS_WORKSPACE = os.getenv("COS_WORKSPACE", "/home/mansigambhir/.openclaw/workspace")
-PULSE_SNAPSHOTS_DIR = os.path.join(COS_WORKSPACE, "data", "pulse-snapshots")
 
 router = APIRouter(prefix="/api/pulse", tags=["pulse"])
 
@@ -36,10 +30,10 @@ def get_pulse_board():
     today = date.today()
 
     # Try CoS workspace first
-    board_snapshot = cos_reader.get_board_snapshot()
-    followups = cos_reader.get_all_followups()
-    perf_data = cos_reader.get_performance_data()
-    roster = cos_reader.get_team_roster()
+    board_snapshot = convex_db.get_board_snapshot()
+    followups = convex_db.list_followups() or []
+    perf_data = convex_db.list_performance()
+    roster = convex_db.list_team_members()
 
     if board_snapshot and roster:
         # Build from real CoS data
@@ -196,8 +190,8 @@ def get_pulse_board():
 
 @router.get("/summary")
 def get_pulse_summary():
-    followups = cos_reader.get_all_followups()
-    roster = cos_reader.get_team_roster()
+    followups = convex_db.list_followups() or []
+    roster = convex_db.list_team_members()
     today = str(date.today())
 
     if followups is not None and roster:
@@ -228,11 +222,11 @@ def get_person_detail(slug: str):
     today = str(date.today())
 
     # Try CoS workspace first
-    roster = cos_reader.get_team_roster()
+    roster = convex_db.list_team_members()
     roster_map = {r["slug"]: r for r in roster} if roster else {}
     person_info = roster_map.get(slug)
-    perf = cos_reader.get_person_performance(slug)
-    followups = cos_reader.get_all_followups()
+    perf = convex_db.get_performance(slug)
+    followups = convex_db.list_followups() or []
 
     if person_info and followups is not None:
         person_fus = [f for f in followups if f.get("who") == slug]
@@ -292,24 +286,23 @@ def get_person_detail(slug: str):
 # --- Pulse Snapshots & Trends ---
 
 def save_pulse_snapshot(db=None):
-    """Save today's aggregated stats to data/pulse-snapshots/YYYY-MM-DD.json"""
-    os.makedirs(PULSE_SNAPSHOTS_DIR, exist_ok=True)
+    """Save today's aggregated stats to Convex pulse_snapshots table."""
     today_str = str(date.today())
-    path = os.path.join(PULSE_SNAPSHOTS_DIR, f"{today_str}.json")
 
     # Don't overwrite if already saved today
-    if os.path.exists(path):
+    existing = convex_db.get_pulse_snapshot(today_str)
+    if existing:
         return
 
-    # Compute stats from CoS data
-    followups = cos_reader.get_all_followups() or []
+    # Compute stats from Convex data
+    followups = convex_db.list_followups() or []
     active = [f for f in followups if f.get("status") in ("open", "in_progress")]
     overdue = [f for f in active if f.get("due") and f["due"] < today_str]
     done = [f for f in followups if f.get("status") == "resolved"]
 
     # Team health
-    roster = cos_reader.get_team_roster() or []
-    perf_data = cos_reader.get_performance_data() or []
+    roster = convex_db.list_team_members() or []
+    perf_data = convex_db.list_performance() or []
     health_vals = {"green": 100, "yellow": 75, "orange": 50, "red": 25}
     healths = []
     for r in roster:
@@ -324,25 +317,26 @@ def save_pulse_snapshot(db=None):
 
     team_health = round(sum(healths) / len(healths)) if healths else 0
 
-    snapshot = {
+    convex_db.save_pulse_snapshot({
         "date": today_str,
         "active_tasks": len(active),
         "done_today": len(done),
         "overdue": len(overdue),
         "team_reliability": team_health,
-    }
-
-    with open(path, "w") as f:
-        json.dump(snapshot, f, indent=2)
+    })
 
 
 @router.get("/trends")
 def get_pulse_trends(days: int = 7):
     """Return last N days of pulse stats for sparklines."""
-    os.makedirs(PULSE_SNAPSHOTS_DIR, exist_ok=True)
-
     # Save today's snapshot if not already saved (lazy init)
     save_pulse_snapshot()
+
+    # Fetch recent snapshots from Convex
+    snapshots = convex_db.list_pulse_snapshots(days) or []
+
+    # Build a date→snapshot map
+    snap_map = {s.get("date"): s for s in snapshots if s.get("date")}
 
     today = date.today()
     active_tasks = []
@@ -352,19 +346,14 @@ def get_pulse_trends(days: int = 7):
     dates = []
 
     for i in range(days - 1, -1, -1):  # oldest first
-        d = today - timedelta(days=i)
-        d_str = str(d)
-        path = os.path.join(PULSE_SNAPSHOTS_DIR, f"{d_str}.json")
-        try:
-            with open(path, "r") as f:
-                snap = json.load(f)
+        d_str = str(today - timedelta(days=i))
+        snap = snap_map.get(d_str)
+        if snap:
             active_tasks.append(snap.get("active_tasks", 0))
             done_today.append(snap.get("done_today", 0))
             overdue.append(snap.get("overdue", 0))
             team_reliability.append(snap.get("team_reliability", 0))
             dates.append(d_str)
-        except (FileNotFoundError, json.JSONDecodeError):
-            pass  # skip missing days
 
     return {
         "dates": dates,
@@ -396,7 +385,7 @@ def get_activity_feed(limit: int = 15):
     events = []
 
     # Follow-ups
-    followups = cos_reader.get_all_followups() or []
+    followups = convex_db.list_followups() or [] or []
     for fu in followups:
         fu_id = fu.get("id", "")
         who = fu.get("who", "system")
@@ -423,7 +412,7 @@ def get_activity_feed(limit: int = 15):
             })
 
     # Tasks
-    import taskflow_local
+    import taskflow_service as taskflow_local
     tasks = taskflow_local._read_all_tasks()
     for t in tasks:
         task_id = t.get("id", "")
@@ -451,7 +440,7 @@ def get_activity_feed(limit: int = 15):
             })
 
     # Standups (today + yesterday)
-    import standup_local
+    import standup_service as standup_local
     for days_ago in range(2):
         d = str(date.today() - timedelta(days=days_ago))
         standups = standup_local.get_standups_by_date(d)
@@ -482,7 +471,7 @@ def get_pulse_alerts():
     warnings = []
 
     # Overdue follow-ups
-    followups = cos_reader.get_all_followups() or []
+    followups = convex_db.list_followups() or [] or []
     for fu in followups:
         if fu.get("status") not in ("open", "in_progress"):
             continue
@@ -503,7 +492,7 @@ def get_pulse_alerts():
             warnings.append({**item, "severity": "warning", "reason": f"{pri} overdue by {days_over}d"})
 
     # TaskFlow blocked/overdue tasks
-    import taskflow_local
+    import taskflow_service as taskflow_local
     all_tasks = taskflow_local._read_all_tasks()
     for t in all_tasks:
         if not taskflow_local._is_active(t):
@@ -520,7 +509,7 @@ def get_pulse_alerts():
             warnings.append({"source": "task", "id": task_id, "severity": "warning", "message": f"{task_id}: {title}", "reason": f"Overdue by {days}d", "link": "/taskflow"})
 
     # At-risk clients
-    clients = cos_reader.get_all_clients() or []
+    clients = convex_db.list_clients() or []
     for c in clients:
         health = c.get("health", c.get("health_score", 100)) or 100
         if health < 40:
@@ -529,7 +518,7 @@ def get_pulse_alerts():
             warnings.append({"source": "client", "id": c.get("slug"), "severity": "warning", "message": f"{c.get('name')}: health {health}%", "reason": "At-risk", "link": "/clients"})
 
     # Standup blockers
-    import standup_local
+    import standup_service as standup_local
     summary = standup_local.get_standup_summary()
     for b in summary.get("blockers", []):
         if b.get("blocker"):
@@ -550,11 +539,11 @@ def get_pulse_alerts():
 def get_ceo_summary():
     """Single aggregated summary for CEO — all key metrics in one response."""
     today_str = str(date.today())
-    import taskflow_local
-    import standup_local
+    import taskflow_service as taskflow_local
+    import standup_service as standup_local
 
     # Follow-ups
-    followups = cos_reader.get_all_followups() or []
+    followups = convex_db.list_followups() or [] or []
     active_fus = [f for f in followups if f.get("status") in ("open", "in_progress")]
     overdue_fus = [f for f in active_fus if f.get("due") and f["due"] < today_str]
 
@@ -562,7 +551,7 @@ def get_ceo_summary():
     tf_summary = taskflow_local.get_summary()
 
     # Sprint
-    sprint = cos_reader.get_active_sprint()
+    sprint = convex_db.get_active_sprint()
     sprint_pct = 0
     sprint_name = ""
     if sprint:
@@ -580,16 +569,16 @@ def get_ceo_summary():
     standup_stats = standup_local.get_standup_stats()
 
     # Clients
-    clients = cos_reader.get_all_clients() or []
+    clients = convex_db.list_clients() or []
     at_risk = len([c for c in clients if (c.get("health", c.get("health_score", 100)) or 100) < 60])
 
     # Meetings
-    meetings = cos_reader.get_meetings(today_str)
+    meetings = convex_db.get_meetings(today_str)
     meeting_count = len((meetings or {}).get("events", (meetings or {}).get("meetings", [])))
 
     # Team health (from person health colors)
-    roster = cos_reader.get_team_roster() or []
-    perf_data = cos_reader.get_performance_data() or []
+    roster = convex_db.list_team_members() or []
+    perf_data = convex_db.list_performance() or []
     perf_map = {p.get("person"): p for p in perf_data}
     health_vals = {"green": 100, "yellow": 75, "orange": 50, "red": 25}
     healths = []

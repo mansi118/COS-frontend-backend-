@@ -5,21 +5,25 @@ from datetime import datetime, date
 from typing import Optional
 from fastapi import APIRouter, Query, UploadFile, File, Form, BackgroundTasks
 from fastapi.responses import FileResponse
-import cos_reader
 import convex_db
 from services.voice_storage import save_audio, get_audio_url, delete_audio, get_local_path, get_storage_mode
 
 router = APIRouter(prefix="/api/voice", tags=["voice"])
 
-# Resolve slugs to full names
-_roster = cos_reader.get_team_roster() or []
-_roster_map = {r["slug"]: r for r in _roster}
+# Lazy-loaded roster for name resolution
+_roster_cache = None
+def _get_roster_map():
+    global _roster_cache
+    if _roster_cache is None:
+        members = convex_db.list_team_members() or []
+        _roster_cache = {m.get("slug"): m for m in members}
+    return _roster_cache
 
 
 def _vu_to_api(vu: dict) -> dict:
     """Convert CoS JSON voice update to API response."""
     who = vu.get("who")
-    who_name = _roster_map.get(who, {}).get("name", who) if who else None
+    who_name = _get_roster_map().get(who, {}).get("name", who) if who else None
     audio_key = vu.get("audio_url", "")
     return {
         "vu_id": vu.get("id", ""),
@@ -64,14 +68,6 @@ def _transcribe_background(vu_id: str, audio_key: str, unused: str):
     if not transcript:
         return
 
-    # Update CoS JSON
-    vu = cos_reader.get_voice_update(vu_id)
-    if vu:
-        vu["transcript"] = transcript
-        vu["summary"] = transcript[:100].strip() + ("..." if len(transcript) > 100 else "")
-        vu["updated_at"] = datetime.utcnow().isoformat()
-        cos_reader.write_voice_update(vu_id, vu)
-
     # Update Convex
     convex_db.update_voice_update(vu_id, {
         "transcript": transcript,
@@ -95,7 +91,7 @@ def get_voice_config():
     return {
         "storage_mode": get_storage_mode(),
         "s3_configured": get_storage_mode() == "s3",
-        "total_updates": len(cos_reader.get_all_voice_updates()),
+        "total_updates": len(convex_db.list_all_voice_updates() or []),
     }
 
 
@@ -107,7 +103,7 @@ def get_voice_feed(
     limit: int = Query(20, le=50),
 ):
     """Get voice feed — paginated, filterable."""
-    updates = cos_reader.get_all_voice_updates()
+    updates = convex_db.list_all_voice_updates() or []
 
     if who:
         updates = [v for v in updates if v.get("who") == who]
@@ -129,7 +125,7 @@ def get_voice_feed(
 @router.get("/stats")
 def get_voice_stats():
     """Voice update statistics."""
-    updates = cos_reader.get_all_voice_updates()
+    updates = convex_db.list_all_voice_updates() or []
     today_str = date.today().isoformat()
 
     today_updates = [v for v in updates if (v.get("created_at", "")[:10] or "") == today_str]
@@ -163,7 +159,7 @@ async def upload_voice(
     tags: str = Form(""),
 ):
     """Upload voice recording → save audio → create record → background transcribe."""
-    vu_num = cos_reader.increment_voice_counter()
+    vu_num = int(convex_db.increment_counter("voice") or 1)
     vu_id = f"VU-{vu_num:04d}"
     now = datetime.utcnow().isoformat()
 
@@ -198,9 +194,7 @@ async def upload_voice(
         "updated_at": now,
         "events": [{"timestamp": now, "action": "recorded", "actor": who}],
     }
-    cos_reader.write_voice_update(vu_id, vu_data)
-
-    # Write to Convex
+    # Write to Convex (sole data source)
     convex_db.insert_voice_update({
         "vu_id": vu_id,
         "who": who,
@@ -227,7 +221,7 @@ async def upload_voice(
 @router.get("/{vu_id}")
 def get_voice_update(vu_id: str):
     """Get single voice update with audio URL."""
-    vu = cos_reader.get_voice_update(vu_id)
+    vu = convex_db.get_voice_update(vu_id)
     if not vu:
         return {"error": "Voice update not found"}
     return _vu_to_api(vu)
@@ -250,7 +244,7 @@ def stream_audio(path: str):
 @router.patch("/{vu_id}/listened")
 def mark_listened(vu_id: str, user: str = Query(...)):
     """Mark voice update as listened by a user."""
-    vu = cos_reader.get_voice_update(vu_id)
+    vu = convex_db.get_voice_update(vu_id)
     if not vu:
         return {"error": "Not found"}
 
@@ -258,15 +252,7 @@ def mark_listened(vu_id: str, user: str = Query(...)):
     if user not in listened:
         listened.append(user)
         vu["listened_by"] = listened
-        vu["updated_at"] = datetime.utcnow().isoformat()
-        vu.setdefault("events", []).append({
-            "timestamp": datetime.utcnow().isoformat(),
-            "action": f"listened_by_{user}",
-            "actor": user,
-        })
-        cos_reader.write_voice_update(vu_id, vu)
-
-    convex_db.update_voice_update(vu_id, {"listened_by": listened, "updated_at": datetime.utcnow().isoformat()})
+        convex_db.update_voice_update(vu_id, {"listened_by": listened, "updated_at": datetime.utcnow().isoformat()})
 
     return {"vu_id": vu_id, "listened_by": listened}
 
@@ -274,7 +260,7 @@ def mark_listened(vu_id: str, user: str = Query(...)):
 @router.post("/{vu_id}/route")
 def route_voice_update(vu_id: str, target_type: str = Form(...)):
     """Manually route a voice update to a follow-up or task."""
-    vu = cos_reader.get_voice_update(vu_id)
+    vu = convex_db.get_voice_update(vu_id)
     if not vu:
         return {"error": "Not found"}
 
@@ -295,7 +281,7 @@ def route_voice_update(vu_id: str, target_type: str = Form(...)):
             routed.append({"type": "followup", "id": fu_id})
 
     elif target_type == "task":
-        import taskflow_local
+        import taskflow_service as taskflow_local
         task = taskflow_local.create_task({
             "title": vu.get("summary") or transcript[:60],
             "owner": vu.get("who"),
@@ -307,9 +293,6 @@ def route_voice_update(vu_id: str, target_type: str = Form(...)):
             routed.append({"type": "task", "id": task.get("id")})
 
     vu["routed_to"] = routed
-    vu["updated_at"] = datetime.utcnow().isoformat()
-    cos_reader.write_voice_update(vu_id, vu)
-
     convex_db.update_voice_update(vu_id, {"routed_to": routed, "updated_at": datetime.utcnow().isoformat()})
 
     return {"vu_id": vu_id, "routed_to": routed}
@@ -318,17 +301,10 @@ def route_voice_update(vu_id: str, target_type: str = Form(...)):
 @router.delete("/{vu_id}")
 def delete_voice_update(vu_id: str):
     """Delete voice update + audio file."""
-    vu = cos_reader.get_voice_update(vu_id)
+    vu = convex_db.get_voice_update(vu_id)
 
     if vu and vu.get("audio_url"):
         delete_audio(vu["audio_url"])
-
-    vu_path = os.path.join(
-        os.getenv("COS_WORKSPACE", os.path.expanduser("~/.openclaw/workspace")),
-        "data", "voice", f"{vu_id}.json"
-    )
-    if os.path.exists(vu_path):
-        os.remove(vu_path)
 
     convex_db.delete_voice_update(vu_id)
 

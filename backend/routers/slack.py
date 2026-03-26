@@ -7,8 +7,8 @@ import urllib.request
 from typing import Optional
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
-import cos_reader
-import taskflow_local
+import convex_db
+import taskflow_service as taskflow_local
 
 router = APIRouter(prefix="/api/slack", tags=["slack"])
 
@@ -60,7 +60,7 @@ def markdown_to_slack(text: str) -> str:
 
 def _resolve_channel(channel: str) -> str:
     """Resolve channel name to ID using notification-routes.json."""
-    routes = cos_reader.get_notification_routes()
+    routes = convex_db.get_notification_routes()
     if routes:
         channels = routes.get("slack", {}).get("channels", {})
         # Try exact match first
@@ -75,7 +75,7 @@ def _resolve_channel(channel: str) -> str:
 
 def _resolve_user(person: str) -> Optional[str]:
     """Resolve person slug to Slack user ID."""
-    routes = cos_reader.get_notification_routes()
+    routes = convex_db.get_notification_routes()
     if routes:
         contacts = routes.get("contacts", {})
         contact = contacts.get(person, {})
@@ -221,7 +221,7 @@ def send_briefing(channel: str = Query("daily_update")):
 @router.get("/channels")
 def list_channels():
     """Return configured Slack channels from notification-routes.json."""
-    routes = cos_reader.get_notification_routes()
+    routes = convex_db.get_notification_routes()
     if not routes:
         return {"channels": []}
     slack_cfg = routes.get("slack", {})

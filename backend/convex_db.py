@@ -103,7 +103,8 @@ def get_followup(fu_id: str) -> Optional[dict]:
 
 def list_followups(**filters) -> Optional[list]:
     """List follow-ups with optional filters."""
-    return query("followups:list", filters)
+    clean = {k: v for k, v in filters.items() if v is not None}
+    return query("followups:list", clean)
 
 
 def update_followup(fu_id: str, updates: dict) -> Optional[str]:
@@ -406,3 +407,95 @@ def update_tag(tag_id: str, data: dict) -> Optional[str]:
 
 def delete_tag(tag_id: str) -> Optional[str]:
     return mutate("taskflow_meta:deleteTag", {"tag_id": tag_id})
+
+
+# --- Notification config wrappers ---
+
+def get_notification_routes() -> Optional[dict]:
+    """Get the team notification config (contacts, routes, slack channels)."""
+    return query("notification_config:get")
+
+
+def set_notification_routes(data: dict) -> Optional[str]:
+    """Set/update the notification config."""
+    return mutate("notification_config:set", data)
+
+
+# --- Calendar meetings wrappers ---
+
+def get_meetings(date_str: str) -> Optional[dict]:
+    """Get meetings for a specific date."""
+    return query("calendar_meetings:getByDate", {"date": date_str})
+
+
+def upsert_meetings(date_str: str, meetings: list, timezone: str = None) -> Optional[str]:
+    """Create or update meetings for a date."""
+    args = {"date": date_str, "meetings": meetings}
+    if timezone:
+        args["timezone"] = timezone
+    return mutate("calendar_meetings:upsert", args)
+
+
+# --- Vault wrappers ---
+
+def list_vault_entries(namespace: str = None) -> Optional[list]:
+    """List vault entries, optionally filtered by namespace."""
+    args = {}
+    if namespace:
+        args["namespace"] = namespace
+    return query("vault_entries:list", args)
+
+
+def create_vault_entry(data: dict) -> Optional[str]:
+    """Create a vault entry."""
+    return mutate("vault_entries:create", data)
+
+
+# --- Counter wrappers ---
+
+def increment_counter(counter_type: str) -> Optional[int]:
+    """Atomically increment a counter and return the next value."""
+    return mutate("counters:increment", {"counter_type": counter_type})
+
+
+def set_counter(counter_type: str, next_val: int) -> Optional[str]:
+    """Set a counter to a specific value."""
+    return mutate("counters:set", {"counter_type": counter_type, "next_val": next_val})
+
+
+# --- Pulse snapshot wrappers ---
+
+def save_pulse_snapshot(data: dict) -> Optional[str]:
+    """Save a daily pulse snapshot."""
+    return mutate("pulse_snapshots:create", data)
+
+
+def get_pulse_snapshot(date_str: str) -> Optional[dict]:
+    """Get pulse snapshot for a specific date."""
+    return query("pulse_snapshots:getByDate", {"date": date_str})
+
+
+def list_pulse_snapshots(days: int = 7) -> Optional[list]:
+    """Get recent pulse snapshots."""
+    return query("pulse_snapshots:listRecent", {"days": days})
+
+
+# --- EOD snapshot wrappers ---
+
+def get_eod_snapshot(date_str: str = None) -> Optional[dict]:
+    """Get EOD snapshot — by date, or latest."""
+    if date_str:
+        return query("eod_snapshots:getByDate", {"date": date_str})
+    return query("eod_snapshots:latest")
+
+
+def save_eod_snapshot(data: dict) -> Optional[str]:
+    """Save an EOD snapshot."""
+    return mutate("eod_snapshots:create", data)
+
+
+# --- Voice update list wrapper (was missing) ---
+
+def list_all_voice_updates(**filters) -> Optional[list]:
+    """List all voice updates with optional filters."""
+    return query("voice_updates:list", filters)

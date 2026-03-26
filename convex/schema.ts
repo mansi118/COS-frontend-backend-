@@ -200,6 +200,53 @@ export default defineSchema({
     color: v.optional(v.string()),
   }).index("by_tag_id", ["tag_id"]),
 
+  notification_config: defineTable({
+    config_key: v.string(),
+    ceo: v.optional(v.any()),
+    routes: v.optional(v.any()),
+    contacts: v.optional(v.any()),
+    slack: v.optional(v.any()),
+    defaults: v.optional(v.any()),
+    updated_at: v.optional(v.string()),
+  }).index("by_key", ["config_key"]),
+
+  calendar_meetings: defineTable({
+    date: v.string(),
+    timezone: v.optional(v.string()),
+    meetings: v.optional(v.array(v.any())),
+    updated_at: v.optional(v.string()),
+  }).index("by_date", ["date"]),
+
+  vault_entries: defineTable({
+    key: v.string(),
+    namespace: v.optional(v.string()),
+    content: v.optional(v.string()),
+    tags: v.optional(v.array(v.string())),
+    source: v.optional(v.string()),
+    created: v.optional(v.string()),
+    modified: v.optional(v.string()),
+  }).index("by_key", ["key"])
+    .index("by_namespace", ["namespace"]),
+
+  counters: defineTable({
+    counter_type: v.string(),
+    next_val: v.number(),
+  }).index("by_type", ["counter_type"]),
+
+  pulse_snapshots: defineTable({
+    date: v.string(),
+    active_tasks: v.optional(v.number()),
+    done_today: v.optional(v.number()),
+    overdue: v.optional(v.number()),
+    team_reliability: v.optional(v.number()),
+  }).index("by_date", ["date"]),
+
+  eod_snapshots: defineTable({
+    date: v.string(),
+    data: v.any(),
+    created_at: v.optional(v.string()),
+  }).index("by_date", ["date"]),
+
   vexa_meetings: defineTable({
     title: v.string(),
     platform: v.string(),

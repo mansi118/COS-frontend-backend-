@@ -6,8 +6,8 @@ import difflib
 from datetime import datetime, timedelta
 from typing import Optional
 
-import cos_reader
-import taskflow_local
+import convex_db
+import taskflow_service as taskflow_local
 
 
 # --- Priority keyword mapping ---
@@ -92,7 +92,7 @@ def create_followup_from_standup(
     source_id = f"{person}/{date_str}"
 
     # Idempotency: check if FU already exists for this standup
-    existing_fus = cos_reader.get_all_followups()
+    existing_fus = convex_db.list_followups() or []
     for fu in existing_fus:
         if fu.get("source_id") == source_id and fu.get("source") == "standup":
             return fu.get("id")
@@ -110,7 +110,7 @@ def create_followup_from_standup(
         for item in items
     ]
 
-    name = cos_reader.get_team_roster()
+    name = convex_db.list_team_members()
     person_name = person
     if name:
         for r in name:
@@ -118,7 +118,7 @@ def create_followup_from_standup(
                 person_name = r.get("name", person)
                 break
 
-    fu_id_num = cos_reader.increment_followup_counter()
+    fu_id_num = int(convex_db.increment_counter("followup") or 1)
     fu_id = f"FU-{fu_id_num:04d}"
     now = datetime.utcnow().isoformat()
 
@@ -139,7 +139,12 @@ def create_followup_from_standup(
         "reminders_sent": 0,
         "events": [{"timestamp": now, "action": "created", "actor": "standup-fanout"}],
     }
-    cos_reader.write_followup(fu_id, cos_data)
+    convex_db.insert_followup({k: v for k, v in {
+        "fu_id": fu_id, "what": cos_data.get("what"), "who": cos_data.get("who"),
+        "due": cos_data.get("due"), "priority": cos_data.get("priority"), "status": cos_data.get("status", "open"),
+        "source": cos_data.get("source"), "source_id": cos_data.get("source_id"), "notes": cos_data.get("notes"),
+        "checklist": cos_data.get("checklist_items"), "created_at": cos_data.get("created"), "updated_at": cos_data.get("updated"),
+    }.items() if v is not None})
 
     # Also write to Convex (replaces PostgreSQL)
     try:
@@ -206,7 +211,7 @@ def suggest_resolutions(person: str, done: str, db=None) -> list[dict]:
         return []
 
     # Get all open follow-ups for this person
-    all_fus = cos_reader.get_all_followups()
+    all_fus = convex_db.list_followups() or []
     open_fus = [
         f for f in all_fus
         if f.get("who") == person and f.get("status") in ("open", "in_progress")
@@ -266,7 +271,7 @@ def create_followups_from_meeting(
     Returns FU ID or None. Idempotent."""
 
     # Idempotency
-    existing_fus = cos_reader.get_all_followups()
+    existing_fus = convex_db.list_followups() or []
     for fu in existing_fus:
         if fu.get("source_id") == transcript_id and fu.get("source") == "meeting":
             return fu.get("id")
@@ -282,7 +287,7 @@ def create_followups_from_meeting(
     if not checklist:
         return None
 
-    fu_id_num = cos_reader.increment_followup_counter()
+    fu_id_num = int(convex_db.increment_counter("followup") or 1)
     fu_id = f"FU-{fu_id_num:04d}"
     now = datetime.utcnow().isoformat()
     due = (datetime.utcnow() + timedelta(days=3)).strftime("%Y-%m-%d")
@@ -304,7 +309,12 @@ def create_followups_from_meeting(
         "reminders_sent": 0,
         "events": [{"timestamp": now, "action": "created", "actor": "meeting-extract"}],
     }
-    cos_reader.write_followup(fu_id, cos_data)
+    convex_db.insert_followup({k: v for k, v in {
+        "fu_id": fu_id, "what": cos_data.get("what"), "who": cos_data.get("who"),
+        "due": cos_data.get("due"), "priority": cos_data.get("priority"), "status": cos_data.get("status", "open"),
+        "source": cos_data.get("source"), "source_id": cos_data.get("source_id"), "notes": cos_data.get("notes"),
+        "checklist": cos_data.get("checklist_items"), "created_at": cos_data.get("created"), "updated_at": cos_data.get("updated"),
+    }.items() if v is not None})
 
     # Convex write
     try:
@@ -346,7 +356,7 @@ def create_followups_from_meeting(
 
 def confirm_checklist_resolution(fu_id: str, item_index: int, db=None) -> dict:
     """Toggle a checklist item (check ↔ uncheck). If all done, auto-resolve. If unchecked, un-resolve."""
-    fu = cos_reader.get_followup(fu_id)
+    fu = convex_db.get_followup(fu_id)
     if not fu:
         return {"error": "Follow-up not found"}
 
@@ -362,7 +372,7 @@ def confirm_checklist_resolution(fu_id: str, item_index: int, db=None) -> dict:
                 "action": "resolved",
                 "actor": "user-confirm",
             })
-            cos_reader.write_followup(fu_id, fu)
+            convex_db.update_followup(fu_id, {k: v for k, v in {"status": fu.get("status"), "resolved_at": fu.get("resolved_at"), "checklist": fu.get("checklist_items"), "updated_at": fu.get("updated")}.items() if v is not None})
             return {"resolved": True, "fu_id": fu_id}
         return {"error": "Invalid item index"}
 
@@ -399,7 +409,7 @@ def confirm_checklist_resolution(fu_id: str, item_index: int, db=None) -> dict:
             "actor": "user-confirm",
         })
 
-    cos_reader.write_followup(fu_id, fu)
+    convex_db.update_followup(fu_id, {k: v for k, v in {"status": fu.get("status"), "resolved_at": fu.get("resolved_at"), "checklist": fu.get("checklist_items"), "updated_at": fu.get("updated")}.items() if v is not None})
 
     # Update Convex
     try:

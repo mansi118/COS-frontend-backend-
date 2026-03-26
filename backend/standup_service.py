@@ -1,14 +1,13 @@
-"""Daily standup storage — JSON files in data/standups/YYYY-MM-DD/{person}.json"""
+"""Daily standup service — Convex database as sole data source.
 
-import json
-import os
+Drop-in replacement for standup_local.py. Same function signatures,
+same return shapes. Reads/writes Convex only — no local JSON files.
+"""
+
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
-import cos_reader
 import convex_db
 
-COS_WORKSPACE = os.getenv("COS_WORKSPACE", "/home/mansigambhir/.openclaw/workspace")
-STANDUPS_DIR = os.path.join(COS_WORKSPACE, "data", "standups")
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
@@ -20,23 +19,6 @@ def _now_ist() -> str:
     return datetime.now(IST).isoformat()
 
 
-def _ensure_dir(date_str: str):
-    os.makedirs(os.path.join(STANDUPS_DIR, date_str), exist_ok=True)
-
-
-def _read_json(path: str) -> Optional[dict]:
-    try:
-        with open(path, "r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return None
-
-
-def _write_json(path: str, data: dict):
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2, default=str)
-
-
 def _extract_highlights(done: str) -> list[str]:
     """Extract key phrases from done text — first sentence per line, capped at 3."""
     if not done:
@@ -44,7 +26,6 @@ def _extract_highlights(done: str) -> list[str]:
     lines = [l.strip().lstrip("- •").strip() for l in done.split("\n") if l.strip()]
     highlights = []
     for line in lines[:3]:
-        # Take first sentence or first 60 chars
         sentence = line.split(".")[0].strip()
         if sentence:
             highlights.append(sentence[:60])
@@ -52,18 +33,16 @@ def _extract_highlights(done: str) -> list[str]:
 
 
 def _resolve_name(person: str) -> str:
-    roster = cos_reader.get_team_roster()
-    if roster:
-        for r in roster:
-            if r.get("slug") == person:
-                return r.get("name", person)
+    member = convex_db.get_team_member(person)
+    if member:
+        return member.get("name", person)
     return person
 
 
 def _is_weekend(date_str: str) -> bool:
     try:
         d = date.fromisoformat(date_str)
-        return d.weekday() >= 5  # 5=Sat, 6=Sun
+        return d.weekday() >= 5
     except (ValueError, TypeError):
         return False
 
@@ -72,7 +51,6 @@ def _is_weekend(date_str: str) -> bool:
 
 def post_standup(person: str, data: dict) -> dict:
     today = _today_ist()
-    _ensure_dir(today)
 
     standup = {
         "person": person,
@@ -88,28 +66,21 @@ def post_standup(person: str, data: dict) -> dict:
         "updated_at": _now_ist(),
     }
 
-    # Check if already posted today — preserve created_at
+    # Preserve created_at if already posted today
     existing = get_standup(person, today)
     if existing:
         standup["created_at"] = existing.get("created_at", standup["created_at"])
 
-    path = os.path.join(STANDUPS_DIR, today, f"{person}.json")
-    _write_json(path, standup)
-
-    # Dual-write to Convex
-    try:
-        cvx_data = {k: v for k, v in standup.items() if v is not None}
-        convex_db.post_standup(cvx_data)
-    except Exception as e:
-        print(f"[standup_local] Convex dual-write failed: {e}")
+    # Write to Convex (sole data source)
+    cvx_data = {k: v for k, v in standup.items() if v is not None}
+    convex_db.post_standup(cvx_data)
 
     return standup
 
 
 def get_standup(person: str, date_str: str = None) -> Optional[dict]:
     date_str = date_str or _today_ist()
-    path = os.path.join(STANDUPS_DIR, date_str, f"{person}.json")
-    return _read_json(path)
+    return convex_db.get_standup(person, date_str)
 
 
 def update_standup(person: str, data: dict) -> Optional[dict]:
@@ -117,20 +88,18 @@ def update_standup(person: str, data: dict) -> Optional[dict]:
     existing = get_standup(person, today)
     if not existing:
         return None
-    for key in ("done", "doing", "blockers", "mood", "linked_tasks"):
+
+    for key in ("done", "doing", "blockers", "mood", "linked_tasks", "doing_priorities"):
         if key in data:
             existing[key] = data[key]
+
     existing["highlights"] = _extract_highlights(existing.get("done", ""))
     existing["updated_at"] = _now_ist()
-    path = os.path.join(STANDUPS_DIR, today, f"{person}.json")
-    _write_json(path, existing)
 
-    # Dual-write to Convex
-    try:
-        update_fields = {k: v for k, v in existing.items() if k not in ("person", "date") and v is not None}
-        convex_db.update_standup(person, today, update_fields)
-    except Exception as e:
-        print(f"[standup_local] Convex update failed: {e}")
+    # Write to Convex — only send fields the update mutation accepts
+    allowed_update_keys = {"done", "doing", "blockers", "mood", "highlights", "linked_tasks", "doing_priorities", "updated_at"}
+    update_fields = {k: v for k, v in existing.items() if k in allowed_update_keys and v is not None}
+    convex_db.update_standup(person, today, update_fields)
 
     return existing
 
@@ -139,16 +108,8 @@ def update_standup(person: str, data: dict) -> Optional[dict]:
 
 def get_standups_by_date(date_str: str = None) -> list[dict]:
     date_str = date_str or _today_ist()
-    day_dir = os.path.join(STANDUPS_DIR, date_str)
-    if not os.path.isdir(day_dir):
-        return []
-    standups = []
-    for fname in sorted(os.listdir(day_dir)):
-        if fname.endswith(".json"):
-            data = _read_json(os.path.join(day_dir, fname))
-            if data:
-                standups.append(data)
-    return standups
+    result = convex_db.get_standups_by_date(date_str)
+    return result or []
 
 
 def get_today_standups() -> list[dict]:
@@ -156,25 +117,25 @@ def get_today_standups() -> list[dict]:
 
 
 def get_person_history(person: str, days: int = 14) -> list[dict]:
-    today = date.today()
-    history = []
-    for i in range(days):
-        d = (today - timedelta(days=i)).isoformat()
-        standup = get_standup(person, d)
-        if standup:
-            history.append(standup)
-    return history
+    """Get standup history — fetches in one query instead of N file reads."""
+    history = convex_db.get_person_standup_history(person, limit=days)
+    return history or []
 
 
 # --- Analytics ---
+
+def _get_all_slugs() -> set[str]:
+    """Get all team member slugs from Convex."""
+    members = convex_db.list_team_members() or []
+    return {m.get("slug") for m in members if m.get("slug")}
+
 
 def get_standup_stats(date_str: str = None) -> dict:
     date_str = date_str or _today_ist()
     posted_standups = get_standups_by_date(date_str)
     posted_slugs = {s.get("person") for s in posted_standups}
 
-    roster = cos_reader.get_team_roster() or []
-    all_slugs = {r.get("slug") for r in roster if r.get("slug")}
+    all_slugs = _get_all_slugs()
     missing = sorted(all_slugs - posted_slugs)
 
     # Mood average
@@ -186,16 +147,19 @@ def get_standup_stats(date_str: str = None) -> dict:
 
     blockers_count = len([s for s in posted_standups if s.get("blockers")])
 
-    # Streaks (consecutive weekdays posted)
+    # Streaks — fetch each person's recent history in one query (not 30 individual reads)
     streaks = {}
     today = date.fromisoformat(date_str) if date_str else date.today()
     for slug in all_slugs:
+        person_history = convex_db.get_person_standup_history(slug, limit=30) or []
+        # Build set of dates this person posted
+        posted_dates = {s.get("date") for s in person_history if s.get("date")}
         streak = 0
         for i in range(30):
             d = today - timedelta(days=i)
             if d.weekday() >= 5:
                 continue  # skip weekends
-            if get_standup(slug, d.isoformat()):
+            if d.isoformat() in posted_dates:
                 streak += 1
             else:
                 break

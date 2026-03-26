@@ -8,7 +8,7 @@ from email.mime.multipart import MIMEMultipart
 from fastapi import APIRouter
 from pydantic import BaseModel
 from typing import Optional
-import cos_reader
+import convex_db
 
 router = APIRouter(prefix="/api/email", tags=["email"])
 
@@ -224,7 +224,7 @@ def api_send_multi(req: MultiEmailRequest):
 @router.post("/notify")
 def api_notify_by_priority(priority: str = "P1", subject: str = "Notification", body: str = ""):
     """Send email based on notification-routes.json priority routing."""
-    routes = cos_reader.get_notification_routes()
+    routes = convex_db.get_notification_routes()
     if not routes:
         return {"error": "notification-routes.json not found"}
 
@@ -254,7 +254,7 @@ def api_notify_by_priority(priority: str = "P1", subject: str = "Notification", 
 @router.get("/contacts")
 def get_email_contacts():
     """Return team contacts from notification-routes.json."""
-    routes = cos_reader.get_notification_routes()
+    routes = convex_db.get_notification_routes()
     if not routes:
         return {"contacts": []}
 

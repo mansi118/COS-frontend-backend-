@@ -1,12 +1,12 @@
 from fastapi import APIRouter, Query
-import cos_reader
+import convex_db
 
 router = APIRouter(prefix="/api/vault", tags=["vault"])
 
 
 @router.get("")
 def list_vault_entries(q: str = Query(None)):
-    entries = cos_reader.get_vault_entries()
+    entries = convex_db.list_vault_entries() or []
 
     if q:
         q_lower = q.lower()

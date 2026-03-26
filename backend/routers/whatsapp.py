@@ -8,8 +8,8 @@ import json
 from typing import Optional
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
-import cos_reader
-import taskflow_local
+import convex_db
+import taskflow_service as taskflow_local
 
 router = APIRouter(prefix="/api/whatsapp", tags=["whatsapp"])
 
@@ -136,7 +136,7 @@ def send_briefing(to: str = Query(None)):
         return {"to": to, **result, "preview": body}
 
     # Send to CEO by default
-    routes = cos_reader.get_notification_routes()
+    routes = convex_db.get_notification_routes()
     if not routes:
         return {"error": "No notification routes configured"}
 
@@ -157,7 +157,7 @@ def send_overdue_alerts():
     if not briefing.get("overdue"):
         return {"status": "nothing_to_send", "overdue_count": 0}
 
-    routes = cos_reader.get_notification_routes()
+    routes = convex_db.get_notification_routes()
     if not routes:
         return {"error": "No notification routes configured"}
 
@@ -188,7 +188,7 @@ def send_overdue_alerts():
 @router.post("/notify")
 def notify_by_priority(priority: str = Query("P0"), message: str = Query("")):
     """Send WhatsApp message based on notification-routes.json priority routing."""
-    routes = cos_reader.get_notification_routes()
+    routes = convex_db.get_notification_routes()
     if not routes:
         return {"error": "No notification routes configured"}
 
@@ -215,7 +215,7 @@ def notify_by_priority(priority: str = Query("P0"), message: str = Query("")):
 @router.get("/contacts")
 def get_whatsapp_contacts():
     """Return team contacts with WhatsApp numbers from notification-routes.json."""
-    routes = cos_reader.get_notification_routes()
+    routes = convex_db.get_notification_routes()
     if not routes:
         return {"contacts": []}
     contacts = routes.get("contacts", {})

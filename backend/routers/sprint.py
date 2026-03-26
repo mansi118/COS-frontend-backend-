@@ -7,8 +7,7 @@ import os
 import json
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-import cos_reader
-import standup_local
+import standup_service as standup_local
 
 router = APIRouter(prefix="/api/sprint", tags=["sprint"])
 
@@ -151,7 +150,7 @@ def get_current_sprint():
     today = date.today()
 
     # Primary: CoS workspace
-    cos_sprint = cos_reader.get_active_sprint()
+    cos_sprint = convex_db.get_active_sprint()
     if cos_sprint:
         start_str = cos_sprint.get("start", cos_sprint.get("start_date", ""))
         end_str = cos_sprint.get("end", cos_sprint.get("end_date", ""))
@@ -168,8 +167,8 @@ def get_current_sprint():
         time_pct = min(round((elapsed_days / total_days) * 100), 100)
 
         # Count tasks from CoS follow-ups created during sprint (filtered by date)
-        followups = cos_reader.get_all_followups()
-        sprint_fus = [f for f in followups if (f.get("created", "")[:10] or "") >= start_str]
+        followups = convex_db.list_followups() or []
+        sprint_fus = [f for f in followups if (f.get("created_at", f.get("created", ""))[:10] or "") >= start_str]
         total_tasks = len(sprint_fus)
         done_tasks = len([f for f in sprint_fus if f.get("status") == "resolved"])
         open_tasks = len([f for f in sprint_fus if f.get("status") in ("open", "in_progress")])
@@ -179,9 +178,9 @@ def get_current_sprint():
         done_pct = round((done_tasks / total_tasks) * 100) if total_tasks else 0
 
         # Checklist-level progress
-        total_items = sum(len(f.get("checklist_items") or []) for f in sprint_fus)
+        total_items = sum(len(f.get("checklist", f.get("checklist_items")) or []) for f in sprint_fus)
         done_items = sum(
-            len([ci for ci in (f.get("checklist_items") or []) if ci.get("completed")])
+            len([ci for ci in (f.get("checklist", f.get("checklist_items")) or []) if ci.get("completed")])
             for f in sprint_fus
         )
         items_pct = round((done_items / total_items) * 100) if total_items else 0
@@ -252,7 +251,7 @@ def get_burndown():
     today = date.today()
 
     # Primary: CoS workspace
-    cos_sprint = cos_reader.get_active_sprint()
+    cos_sprint = convex_db.get_active_sprint()
     if cos_sprint:
         start_str = cos_sprint.get("start", cos_sprint.get("start_date", ""))
         end_str = cos_sprint.get("end", cos_sprint.get("end_date", ""))
@@ -265,8 +264,8 @@ def get_burndown():
 
         total_days = (end_date - start_date).days or 1
         elapsed_days = min((today - start_date).days, total_days)
-        followups = cos_reader.get_all_followups()
-        sprint_fus = [f for f in followups if (f.get("created", "")[:10] or "") >= start_str]
+        followups = convex_db.list_followups() or []
+        sprint_fus = [f for f in followups if (f.get("created_at", f.get("created", ""))[:10] or "") >= start_str]
         total_tasks = len(sprint_fus)
 
         ideal = []
@@ -298,7 +297,7 @@ def get_burndown():
 @router.get("/standup-activity")
 def get_sprint_standup_activity():
     """Daily standup data for the current sprint — mood, highlights, blockers per day."""
-    cos_sprint = cos_reader.get_active_sprint()
+    cos_sprint = convex_db.get_active_sprint()
     if not cos_sprint:
         return {"days": [], "mood_trend": []}
 
@@ -322,7 +321,7 @@ def get_sprint_standup_activity():
         standups = standup_local.get_standups_by_date(current_date)
 
         posted = len(standups)
-        roster = cos_reader.get_team_roster() or []
+        roster = convex_db.list_team_members() or []
         total = len(roster)
 
         moods = [mood_values.get(s.get("mood", "neutral"), 3) for s in standups]
@@ -357,7 +356,7 @@ def get_sprint_standup_activity():
 def auto_generate_weekly_updates():
     """Auto-generate weekly updates from daily standups for the current week."""
     # Try CoS first, then Convex
-    cos_sprint = cos_reader.get_active_sprint()
+    cos_sprint = convex_db.get_active_sprint()
     sprint_id = None
 
     if cos_sprint:
@@ -395,7 +394,7 @@ def auto_generate_weekly_updates():
     existing_updates = convex_db.list_sprint_updates(sprint_id=sprint_id, week_label=week_label) or []
     existing_persons = {u.get("person") for u in existing_updates}
 
-    roster = cos_reader.get_team_roster() or []
+    roster = convex_db.list_team_members() or []
     mood_values = {"great": 5, "good": 4, "neutral": 3, "struggling": 2, "blocked": 1}
     mood_names = {5: "great", 4: "good", 3: "neutral", 2: "struggling", 1: "blocked"}
 

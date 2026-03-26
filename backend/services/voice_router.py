@@ -2,13 +2,13 @@
 
 from datetime import datetime
 from typing import Optional
-import cos_reader
+import convex_db
 
 
 def auto_route(vu_id: str, db=None) -> list[dict]:  # db param kept for backwards compat but unused
     """Auto-route a voice update based on its type. Call after transcription is done.
     Returns list of routes created: [{"type": "followup", "id": "FU-0042"}, ...]"""
-    vu = cos_reader.get_voice_update(vu_id)
+    vu = convex_db.get_voice_update(vu_id)
     if not vu:
         return []
 
@@ -37,7 +37,7 @@ def auto_route(vu_id: str, db=None) -> list[dict]:  # db param kept for backward
             "action": f"auto_routed_{update_type}",
             "actor": "voice-router",
         })
-        cos_reader.write_voice_update(vu_id, vu)
+        convex_db.update_voice_update(vu_id, {"routed_to": vu.get("routed_to"), "updated_at": vu.get("updated_at")})
 
         # Update Convex
         try:
@@ -77,7 +77,7 @@ def _route_standup(vu_id: str, who: str, transcript: str, db) -> list[dict]:
 
     # Also create a standup entry so it appears on /updates page
     try:
-        import standup_local
+        import standup_service as standup_local
         standup_local.post_standup(who, {
             "done": "",
             "doing": transcript,
@@ -99,7 +99,7 @@ def _route_blocker(vu_id: str, who: str, transcript: str, db) -> list[dict]:
     # Extract first sentence as the blocker title
     first_sentence = transcript.split(".")[0].strip()[:80] if transcript else "Voice blocker"
 
-    fu_num = cos_reader.increment_followup_counter()
+    fu_num = int(convex_db.increment_counter("followup") or 1)
     fu_id = f"FU-{fu_num:04d}"
     now = datetime.utcnow().isoformat()
 
@@ -120,7 +120,13 @@ def _route_blocker(vu_id: str, who: str, transcript: str, db) -> list[dict]:
         "reminders_sent": 0,
         "events": [{"timestamp": now, "action": "created", "actor": "voice-router"}],
     }
-    cos_reader.write_followup(fu_id, cos_data)
+    convex_db.insert_followup({k: v for k, v in {
+        "fu_id": fu_id, "what": cos_data.get("what"), "who": cos_data.get("who"),
+        "due": cos_data.get("due"), "priority": cos_data.get("priority"), "status": "open",
+        "source": cos_data.get("source"), "source_id": cos_data.get("source_id"),
+        "notes": cos_data.get("notes"), "checklist": cos_data.get("checklist_items"),
+        "created_at": cos_data.get("created"), "updated_at": cos_data.get("updated"),
+    }.items() if v is not None})
 
     # Convex write
     try:
@@ -148,7 +154,7 @@ def _route_meeting_note(vu_id: str, who: str, transcript: str, db=None) -> list[
     sentences = [s.strip() for s in transcript.replace("\n", ". ").split(". ") if s.strip() and len(s.strip()) > 5]
     checklist = [{"text": s[:100], "priority": "P2", "completed": False} for s in sentences[:10]]
 
-    fu_num = cos_reader.increment_followup_counter()
+    fu_num = int(convex_db.increment_counter("followup") or 1)
     fu_id = f"FU-{fu_num:04d}"
     now = datetime.utcnow().isoformat()
 
@@ -169,7 +175,13 @@ def _route_meeting_note(vu_id: str, who: str, transcript: str, db=None) -> list[
         "reminders_sent": 0,
         "events": [{"timestamp": now, "action": "created", "actor": "voice-router"}],
     }
-    cos_reader.write_followup(fu_id, cos_data)
+    convex_db.insert_followup({k: v for k, v in {
+        "fu_id": fu_id, "what": cos_data.get("what"), "who": cos_data.get("who"),
+        "due": cos_data.get("due"), "priority": cos_data.get("priority"), "status": "open",
+        "source": cos_data.get("source"), "source_id": cos_data.get("source_id"),
+        "notes": cos_data.get("notes"), "checklist": cos_data.get("checklist_items"),
+        "created_at": cos_data.get("created"), "updated_at": cos_data.get("updated"),
+    }.items() if v is not None})
 
     # Convex write
     try:

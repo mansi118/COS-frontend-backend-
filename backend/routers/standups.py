@@ -3,9 +3,9 @@
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
 from typing import Optional
-import standup_local
+import standup_service as standup_local
 import standup_fanout
-import cos_reader
+import convex_db
 
 router = APIRouter(prefix="/api/standups", tags=["standups"])
 
@@ -115,17 +115,21 @@ def update_priorities(person: str, data: PriorityUpdate, ):
 
     for item_id in linked:
         if item_id.startswith("FU-"):
-            fu = cos_reader.get_followup(item_id)
-            if fu and fu.get("checklist_items"):
+            fu = convex_db.get_followup(item_id)
+            if fu and fu.get("checklist"):
+                checklist = fu["checklist"]
                 for idx_str, priority in data.priorities.items():
                     idx = int(idx_str)
-                    if 0 <= idx < len(fu["checklist_items"]):
-                        fu["checklist_items"][idx]["priority"] = priority
-                fu["priority"] = standup_fanout._highest_priority(
-                    [{"priority": ci["priority"]} for ci in fu["checklist_items"]]
+                    if 0 <= idx < len(checklist):
+                        checklist[idx]["priority"] = priority
+                highest = standup_fanout._highest_priority(
+                    [{"priority": ci["priority"]} for ci in checklist]
                 )
-                fu["updated"] = standup_fanout.datetime.utcnow().isoformat()
-                cos_reader.write_followup(item_id, fu)
+                convex_db.update_followup(item_id, {
+                    "checklist": checklist,
+                    "priority": highest,
+                    "updated_at": standup_fanout.datetime.utcnow().isoformat(),
+                })
                 results["updated_fus"].append(item_id)
 
     # Store priorities in standup
@@ -175,7 +179,7 @@ def send_reminders():
     # Also try WhatsApp for those with phone numbers
     try:
         from routers.whatsapp import _send_whatsapp
-        routes = cos_reader.get_notification_routes() or {}
+        routes = convex_db.get_notification_routes() or {}
         contacts = routes.get("contacts", {})
         for person in missing:
             phone = contacts.get(person, {}).get("whatsapp") or contacts.get(person, {}).get("phone")

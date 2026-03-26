@@ -3,9 +3,9 @@
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
 from typing import Optional
-import taskflow_local
+import taskflow_service as taskflow_local
 import taskflow_client
-import cos_reader
+import convex_db
 from routers.email import send_email
 
 router = APIRouter(prefix="/api/taskflow", tags=["taskflow"])
@@ -57,15 +57,20 @@ class ProjectCreate(BaseModel):
 
 
 # Resolve slugs to full names
-_roster = cos_reader.get_team_roster() or []
-_roster_map = {r["slug"]: r for r in _roster}
+_roster_cache = None
+def _get_roster_map():
+    global _roster_cache
+    if _roster_cache is None:
+        members = convex_db.list_team_members() or []
+        _roster_cache = {m.get("slug"): m for m in members}
+    return _roster_cache
 
 
 def _enrich_tasks(tasks: list) -> list:
     """Add who_name to each task from roster."""
     for t in tasks:
         owner = t.get("owner") or t.get("assigned_to") or ""
-        t["who_name"] = _roster_map.get(owner, {}).get("name", owner) if owner else None
+        t["who_name"] = _get_roster_map().get(owner, {}).get("name", owner) if owner else None
     return tasks
 
 
@@ -329,7 +334,7 @@ class NotifyCustom(BaseModel):
 def notify_briefing():
     """Generate daily briefing and email to team."""
     briefing = taskflow_local.get_daily_briefing()
-    routes = cos_reader.get_notification_routes()
+    routes = convex_db.get_notification_routes()
     if not routes:
         return {"error": "No notification routes configured"}
 
@@ -365,7 +370,7 @@ def notify_briefing():
 def notify_overdue():
     """Send per-person overdue alerts."""
     briefing = taskflow_local.get_daily_briefing()
-    routes = cos_reader.get_notification_routes()
+    routes = convex_db.get_notification_routes()
     if not routes or not briefing["overdue"]:
         return {"status": "nothing_to_send", "overdue_count": 0}
 

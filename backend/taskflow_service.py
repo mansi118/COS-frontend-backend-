@@ -1,131 +1,80 @@
-"""Local JSON CRUD for TaskFlow — fallback when external TaskFlow API is unavailable."""
+"""TaskFlow service — Convex database as sole data source.
 
-import json
-import os
+Drop-in replacement for taskflow_local.py. Same function signatures,
+same return shapes. Reads/writes Convex only — no local JSON files.
+"""
+
 from datetime import date, datetime, timedelta
 from typing import Optional
-
 import convex_db
 
-COS_WORKSPACE = os.getenv("COS_WORKSPACE", "/home/mansigambhir/.openclaw/workspace")
-TASKS_DIR = os.path.join(COS_WORKSPACE, "data", "tasks")
-META_DIR = os.path.join(COS_WORKSPACE, "data", "taskflow-meta")
 
-
-def _ensure_dirs():
-    os.makedirs(TASKS_DIR, exist_ok=True)
-    os.makedirs(META_DIR, exist_ok=True)
-
-
-def _read_json(path: str) -> Optional[dict]:
-    try:
-        with open(path, "r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return None
-
-
-def _write_json(path: str, data):
-    _ensure_dirs()
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2, default=str)
-
-
-def _normalize_task(data: dict) -> dict:
-    """Normalize legacy CoS task fields to TaskFlow format.
-
-    CoS tasks (NE-001, CONFIG-001) use different field names:
-      due → when_date (also used as deadline)
-      desc/description → notes
-      owner/assignee → assigned_to
-      project (string name) → project_name
-      todo/blocked → valid active statuses
-      labels → tags (if tags missing)
-    """
-    # Dates: CoS uses 'due', TaskFlow uses 'when_date' + 'deadline'
-    if "when_date" not in data and "due" in data:
-        data["when_date"] = data["due"]
-    if "deadline" not in data and "due" in data:
-        data["deadline"] = data["due"]
-
-    # Notes: CoS uses 'desc' or 'description'
-    if "notes" not in data:
-        data["notes"] = data.get("desc", data.get("description", ""))
-
-    # Assignee: CoS uses 'owner' or 'assignee'
-    if "assigned_to" not in data:
-        data["assigned_to"] = data.get("owner", data.get("assignee", ""))
-
-    # Project: CoS uses string 'project', TaskFlow uses 'project_id'
-    if "project_name" not in data and "project" in data and isinstance(data["project"], str):
-        data["project_name"] = data["project"]
-
-    # Tags: CoS may use 'labels' instead of 'tags'
-    if "tags" not in data and "labels" in data:
-        data["tags"] = data["labels"]
-    if "tags" not in data:
-        data["tags"] = []
-
-    # Status normalization: 'todo' and 'blocked' are valid active statuses
-    status = data.get("status", "")
-    if status in ("todo", "blocked", "open", "in_progress"):
-        data["_is_active"] = True
-    elif status in ("completed", "resolved", "done"):
-        data["status"] = "completed"
-        data["_is_active"] = False
-    elif status == "trashed":
-        data["_is_active"] = False
-    elif status == "inbox" or not status:
-        data["_is_active"] = True
-    else:
-        data["_is_active"] = True
-
-    # Priority: ensure consistent format
-    priority = data.get("priority", data.get("priority_hint", ""))
-    data["priority"] = priority
-
-    return data
-
-
-def _read_all_tasks() -> list[dict]:
-    """Read all task JSON files from data/tasks/."""
-    if not os.path.isdir(TASKS_DIR):
-        return []
-    tasks = []
-    for fname in sorted(os.listdir(TASKS_DIR)):
-        if fname.endswith(".json") and fname != "counter.json":
-            data = _read_json(os.path.join(TASKS_DIR, fname))
-            if data and isinstance(data, dict):
-                if "id" not in data:
-                    data["id"] = fname.replace(".json", "")
-                tasks.append(_normalize_task(data))
-    return tasks
-
-
-def _get_counter() -> int:
-    path = os.path.join(META_DIR, "counter.json")
-    data = _read_json(path)
-    return data.get("next", 1) if data else 1
-
-
-def _increment_counter() -> int:
-    _ensure_dirs()
-    path = os.path.join(META_DIR, "counter.json")
-    current = _get_counter()
-    _write_json(path, {"next": current + 1})
-    return current
-
-
-# --- Task CRUD ---
+# --- Constants ---
 
 COMPLETED_STATUSES = ("completed", "resolved", "done")
 TRASHED_STATUSES = ("trashed",)
 ACTIVE_STATUSES = ("open", "in_progress", "todo", "blocked", "active", "inbox")
 
 
+# --- Helpers ---
+
+def _normalize_task(data: dict) -> dict:
+    """Normalize Convex task record to the shape consumers expect.
+
+    Convex stores 'task_id' but consumers expect 'id'.
+    Also compute _is_active and ensure all expected fields exist.
+    """
+    # Map task_id → id for consumer compatibility
+    if "task_id" in data and "id" not in data:
+        data["id"] = data["task_id"]
+
+    # Ensure basic fields exist
+    data.setdefault("notes", "")
+    data.setdefault("tags", [])
+    data.setdefault("checklist_items", [])
+    data.setdefault("priority_hint", "")
+
+    # Assignee alias
+    if "assigned_to" not in data:
+        data["assigned_to"] = data.get("owner", "")
+
+    # Project name alias
+    if "project_name" not in data and "project" in data and isinstance(data["project"], str):
+        data["project_name"] = data["project"]
+
+    # Status normalization
+    status = data.get("status", "")
+    if status in ("todo", "blocked", "open", "in_progress", "active", "inbox", ""):
+        data["_is_active"] = True
+    elif status in COMPLETED_STATUSES:
+        data["_is_active"] = False
+    elif status in TRASHED_STATUSES:
+        data["_is_active"] = False
+    else:
+        data["_is_active"] = True
+
+    # Priority alias
+    data["priority"] = data.get("priority", data.get("priority_hint", ""))
+
+    return data
+
+
 def _is_active(t: dict) -> bool:
     return t.get("_is_active", True) and t.get("status") not in COMPLETED_STATUSES + TRASHED_STATUSES
 
+
+def _read_all_tasks() -> list[dict]:
+    """Read all tasks from Convex and normalize."""
+    raw = convex_db.list_tasks() or []
+    tasks = []
+    for t in raw:
+        # Strip Convex internal fields
+        task = {k: v for k, v in t.items() if not k.startswith("_")}
+        tasks.append(_normalize_task(task))
+    return tasks
+
+
+# --- Task CRUD ---
 
 def list_tasks(view: str = "all") -> list[dict]:
     """List tasks filtered by smart view."""
@@ -143,10 +92,9 @@ def list_tasks(view: str = "all") -> list[dict]:
             when = t.get("when_date")
             deadline = t.get("deadline")
             is_today = t.get("is_today")
-            # Matches: date is today, OR overdue, OR flagged as today
             if (when == today_str
                 or is_today is True
-                or (when and when < today_str)  # overdue
+                or (when and when < today_str)
                 or (deadline and deadline <= today_str)):
                 result.append(t)
         return result
@@ -169,7 +117,6 @@ def list_tasks(view: str = "all") -> list[dict]:
         ]
 
     if view == "anytime":
-        # Active tasks with no specific date and not someday — includes todo/blocked
         return [
             t for t in all_tasks
             if _is_active(t)
@@ -191,27 +138,32 @@ def list_tasks(view: str = "all") -> list[dict]:
     if view == "trash":
         return [t for t in all_tasks if t.get("status") in TRASHED_STATUSES]
 
-    # Default: everything non-trashed
     return [t for t in all_tasks if t.get("status") not in TRASHED_STATUSES]
 
 
 def get_task(task_id: str) -> Optional[dict]:
-    path = os.path.join(TASKS_DIR, f"{task_id}.json")
-    return _read_json(path)
+    task = convex_db.get_task(task_id)
+    if not task:
+        return None
+    result = {k: v for k, v in task.items() if not k.startswith("_")}
+    return _normalize_task(result)
 
 
 def create_task(data: dict) -> dict:
     """Create a new task. Returns the created task dict."""
-    _ensure_dirs()
-    num = _increment_counter()
-    task_id = f"TF-{num:04d}"
+    num = convex_db.increment_counter("task")
+    if not num:
+        num = 1
+    task_id = f"TF-{int(num):04d}"
 
     now = datetime.utcnow().isoformat()
+    status = "inbox" if not data.get("when_date") and not data.get("project_id") else "active"
+
     task = {
         "id": task_id,
         "title": data.get("title", ""),
         "notes": data.get("notes", ""),
-        "status": "inbox" if not data.get("when_date") and not data.get("project_id") else "active",
+        "status": status,
         "when_date": data.get("when_date"),
         "deadline": data.get("deadline"),
         "is_today": data.get("is_today", False),
@@ -229,16 +181,11 @@ def create_task(data: dict) -> dict:
         "trashed_at": None,
     }
 
-    _write_json(os.path.join(TASKS_DIR, f"{task_id}.json"), task)
-
-    # Dual-write to Convex
-    try:
-        cvx = {k: v for k, v in task.items() if v is not None and k != "id"}
-        cvx["task_id"] = task_id
-        cvx["status"] = task.get("status", "inbox")
-        convex_db.create_task(cvx)
-    except Exception as e:
-        print(f"[taskflow_local] Convex create failed: {e}")
+    # Write to Convex
+    cvx = {k: v for k, v in task.items() if v is not None and k != "id"}
+    cvx["task_id"] = task_id
+    cvx["status"] = status
+    convex_db.create_task(cvx)
 
     return task
 
@@ -248,23 +195,19 @@ def update_task(task_id: str, data: dict) -> Optional[dict]:
     if not task:
         return None
     for key, val in data.items():
-        if key != "id":
+        if key not in ("id", "task_id"):
             task[key] = val
     task["updated"] = datetime.utcnow().isoformat()
     # Auto-transition inbox → active
     if task.get("status") == "inbox" and (task.get("when_date") or task.get("project_id") or task.get("is_today")):
         task["status"] = "active"
-    _write_json(os.path.join(TASKS_DIR, f"{task_id}.json"), task)
 
-    # Dual-write to Convex
-    try:
-        cvx_updates = {k: v for k, v in data.items() if k != "id" and v is not None}
-        cvx_updates["updated"] = task["updated"]
-        if "status" in task:
-            cvx_updates["status"] = task["status"]
-        convex_db.update_task(task_id, cvx_updates)
-    except Exception as e:
-        print(f"[taskflow_local] Convex update failed: {e}")
+    # Write to Convex
+    cvx_updates = {k: v for k, v in data.items() if k not in ("id", "task_id") and v is not None}
+    cvx_updates["updated"] = task["updated"]
+    if "status" in task:
+        cvx_updates["status"] = task["status"]
+    convex_db.update_task(task_id, cvx_updates)
 
     return task
 
@@ -276,11 +219,7 @@ def complete_task(task_id: str) -> Optional[dict]:
     task["status"] = "completed"
     task["completed_at"] = datetime.utcnow().isoformat()
     task["updated"] = datetime.utcnow().isoformat()
-    _write_json(os.path.join(TASKS_DIR, f"{task_id}.json"), task)
-    try:
-        convex_db.complete_task(task_id)
-    except Exception:
-        pass
+    convex_db.complete_task(task_id)
     return task
 
 
@@ -291,11 +230,7 @@ def uncomplete_task(task_id: str) -> Optional[dict]:
     task["status"] = "active"
     task["completed_at"] = None
     task["updated"] = datetime.utcnow().isoformat()
-    _write_json(os.path.join(TASKS_DIR, f"{task_id}.json"), task)
-    try:
-        convex_db.uncomplete_task(task_id)
-    except Exception:
-        pass
+    convex_db.uncomplete_task(task_id)
     return task
 
 
@@ -311,23 +246,19 @@ def toggle_task_checklist(task_id: str, item_index: int) -> Optional[dict]:
     task["checklist_items"] = items
     task["updated"] = datetime.utcnow().isoformat()
     # Auto-complete if all items done
-    if all(ci.get("is_completed") for ci in items):
+    if items and all(ci.get("is_completed") for ci in items):
         task["status"] = "completed"
         task["completed_at"] = datetime.utcnow().isoformat()
     elif task.get("status") == "completed":
         task["status"] = "active"
         task["completed_at"] = None
-    _write_json(os.path.join(TASKS_DIR, f"{task_id}.json"), task)
 
-    # Dual-write checklist state to Convex
-    try:
-        cvx_items = [{"title": ci.get("title", ""), "is_completed": ci.get("is_completed", False)} for ci in items]
-        cvx_updates = {"checklist_items": cvx_items, "updated": task["updated"], "status": task["status"]}
-        if task.get("completed_at"):
-            cvx_updates["completed_at"] = task["completed_at"]
-        convex_db.update_task(task_id, cvx_updates)
-    except Exception:
-        pass
+    # Write to Convex
+    cvx_items = [{"title": ci.get("title", ""), "is_completed": ci.get("is_completed", False)} for ci in items]
+    cvx_updates = {"checklist_items": cvx_items, "updated": task["updated"], "status": task["status"]}
+    if task.get("completed_at"):
+        cvx_updates["completed_at"] = task["completed_at"]
+    convex_db.update_task(task_id, cvx_updates)
 
     return task
 
@@ -339,11 +270,7 @@ def trash_task(task_id: str) -> Optional[dict]:
     task["status"] = "trashed"
     task["trashed_at"] = datetime.utcnow().isoformat()
     task["updated"] = datetime.utcnow().isoformat()
-    _write_json(os.path.join(TASKS_DIR, f"{task_id}.json"), task)
-    try:
-        convex_db.trash_task(task_id)
-    except Exception:
-        pass
+    convex_db.trash_task(task_id)
     return task
 
 
@@ -354,13 +281,11 @@ def restore_task(task_id: str) -> Optional[dict]:
     task["status"] = "active"
     task["trashed_at"] = None
     task["updated"] = datetime.utcnow().isoformat()
-    _write_json(os.path.join(TASKS_DIR, f"{task_id}.json"), task)
-    try:
-        convex_db.restore_task(task_id)
-    except Exception:
-        pass
+    convex_db.restore_task(task_id)
     return task
 
+
+# --- Summary ---
 
 def get_summary() -> dict:
     """Get daily summary stats."""
@@ -398,168 +323,141 @@ def get_summary() -> dict:
     }
 
 
-# --- Projects, Areas, Tags (local meta storage) ---
-
-def _read_meta(name: str) -> list[dict]:
-    path = os.path.join(META_DIR, f"{name}.json")
-    data = _read_json(path)
-    return data if isinstance(data, list) else []
-
-
-def _write_meta(name: str, items: list[dict]):
-    _ensure_dirs()
-    _write_json(os.path.join(META_DIR, f"{name}.json"), items)
-
+# --- Projects, Areas, Tags ---
 
 def list_projects() -> list[dict]:
-    projects = _read_meta("projects")
-    if not projects:
-        # Seed with defaults
-        projects = [
-            {"id": "proj-cos", "name": "Chief of Staff", "color": "#818cf8", "status": "active"},
-            {"id": "proj-breakfree", "name": "Breakfree", "color": "#4ade80", "status": "active"},
-            {"id": "proj-vonalbert", "name": "Von Albert", "color": "#facc15", "status": "active"},
-        ]
-        _write_meta("projects", projects)
+    projects = convex_db.list_projects() or []
+    # Normalize id field
+    for p in projects:
+        if "project_id" in p and "id" not in p:
+            p["id"] = p["project_id"]
     # Count tasks per project
     all_tasks = _read_all_tasks()
     for p in projects:
-        p["task_count"] = len([t for t in all_tasks if t.get("project_id") == p["id"] and t.get("status") not in ("completed", "trashed")])
-        p["completed_count"] = len([t for t in all_tasks if t.get("project_id") == p["id"] and t.get("status") == "completed"])
+        pid = p.get("id") or p.get("project_id")
+        p["task_count"] = len([t for t in all_tasks if t.get("project_id") == pid and t.get("status") not in ("completed", "trashed")])
+        p["completed_count"] = len([t for t in all_tasks if t.get("project_id") == pid and t.get("status") == "completed"])
     return projects
 
 
 def create_project(data: dict) -> dict:
-    projects = _read_meta("projects")
+    project_id = f"proj-{data.get('name', '').lower().replace(' ', '-')[:20]}"
     project = {
-        "id": f"proj-{data.get('name', '').lower().replace(' ', '-')[:20] or len(projects) + 1}",
+        "project_id": project_id,
         "name": data.get("name", ""),
-        "notes": data.get("notes", ""),
         "color": data.get("color", "#818cf8"),
         "status": "active",
-        "area_id": data.get("area_id"),
-        "deadline": data.get("deadline"),
     }
-    projects.append(project)
-    _write_meta("projects", projects)
+    if data.get("notes"):
+        project["notes"] = data["notes"]
+    if data.get("area_id"):
+        project["area_id"] = data["area_id"]
+    if data.get("deadline"):
+        project["deadline"] = data["deadline"]
+    convex_db.create_project(project)
+    project["id"] = project_id
     return project
 
 
 def list_areas() -> list[dict]:
-    areas = _read_meta("areas")
+    areas = convex_db.list_areas() or []
+    for a in areas:
+        if "area_id" in a and "id" not in a:
+            a["id"] = a["area_id"]
     if not areas:
-        areas = [
-            {"id": "area-work", "name": "Work", "color": "#818cf8", "icon": "briefcase"},
-            {"id": "area-clients", "name": "Clients", "color": "#4ade80", "icon": "users"},
+        # Seed defaults
+        defaults = [
+            {"area_id": "area-work", "name": "Work", "color": "#818cf8", "icon": "briefcase"},
+            {"area_id": "area-clients", "name": "Clients", "color": "#4ade80", "icon": "users"},
         ]
-        _write_meta("areas", areas)
+        for d in defaults:
+            convex_db.create_area(d)
+            d["id"] = d["area_id"]
+        return defaults
     return areas
 
 
 def list_tags() -> list[dict]:
-    tags = _read_meta("tags")
+    tags = convex_db.list_tags() or []
+    for t in tags:
+        if "tag_id" in t and "id" not in t:
+            t["id"] = t["tag_id"]
     if not tags:
-        tags = [
-            {"id": "tag-urgent", "name": "urgent", "slug": "urgent", "color": "#f87171"},
-            {"id": "tag-p0", "name": "P0", "slug": "p0", "color": "#ef4444"},
-            {"id": "tag-p1", "name": "P1", "slug": "p1", "color": "#f97316"},
-            {"id": "tag-blocked", "name": "blocked", "slug": "blocked", "color": "#f87171"},
-            {"id": "tag-sprint", "name": "sprint", "slug": "sprint", "color": "#818cf8"},
+        # Seed defaults
+        defaults = [
+            {"tag_id": "tag-urgent", "name": "urgent", "slug": "urgent", "color": "#f87171"},
+            {"tag_id": "tag-p0", "name": "P0", "slug": "p0", "color": "#ef4444"},
+            {"tag_id": "tag-p1", "name": "P1", "slug": "p1", "color": "#f97316"},
+            {"tag_id": "tag-blocked", "name": "blocked", "slug": "blocked", "color": "#f87171"},
+            {"tag_id": "tag-sprint", "name": "sprint", "slug": "sprint", "color": "#818cf8"},
         ]
-        _write_meta("tags", tags)
+        for d in defaults:
+            convex_db.create_tag(d)
+            d["id"] = d["tag_id"]
+        return defaults
     return tags
 
 
-# --- Organize CRUD (update/delete for projects, areas, tags) ---
-
 def update_project(project_id: str, data: dict) -> Optional[dict]:
-    projects = _read_meta("projects")
-    for p in projects:
-        if p["id"] == project_id:
-            for k, v in data.items():
-                if k != "id":
-                    p[k] = v
-            _write_meta("projects", projects)
-            return p
-    return None
+    convex_db.update_project(project_id, {k: v for k, v in data.items() if k not in ("id", "project_id")})
+    # Return updated
+    projects = list_projects()
+    return next((p for p in projects if p.get("id") == project_id or p.get("project_id") == project_id), None)
 
 
 def delete_project(project_id: str) -> bool:
-    projects = _read_meta("projects")
-    filtered = [p for p in projects if p["id"] != project_id]
-    if len(filtered) == len(projects):
-        return False
-    _write_meta("projects", filtered)
-    return True
+    result = convex_db.delete_project(project_id)
+    return result is not None
 
 
 def create_area(data: dict) -> dict:
-    areas = _read_meta("areas")
+    area_id = f"area-{data.get('name', '').lower().replace(' ', '-')[:20]}"
     area = {
-        "id": f"area-{data.get('name', '').lower().replace(' ', '-')[:20] or len(areas) + 1}",
+        "area_id": area_id,
         "name": data.get("name", ""),
         "color": data.get("color", "#818cf8"),
-        "icon": data.get("icon"),
     }
-    areas.append(area)
-    _write_meta("areas", areas)
+    if data.get("icon"):
+        area["icon"] = data["icon"]
+    convex_db.create_area(area)
+    area["id"] = area_id
     return area
 
 
 def update_area(area_id: str, data: dict) -> Optional[dict]:
-    areas = _read_meta("areas")
-    for a in areas:
-        if a["id"] == area_id:
-            for k, v in data.items():
-                if k != "id":
-                    a[k] = v
-            _write_meta("areas", areas)
-            return a
-    return None
+    convex_db.update_area(area_id, {k: v for k, v in data.items() if k not in ("id", "area_id")})
+    areas = list_areas()
+    return next((a for a in areas if a.get("id") == area_id or a.get("area_id") == area_id), None)
 
 
 def delete_area(area_id: str) -> bool:
-    areas = _read_meta("areas")
-    filtered = [a for a in areas if a["id"] != area_id]
-    if len(filtered) == len(areas):
-        return False
-    _write_meta("areas", filtered)
-    return True
+    result = convex_db.delete_area(area_id)
+    return result is not None
 
 
 def create_tag(data: dict) -> dict:
-    tags = _read_meta("tags")
     name = data.get("name", "")
+    tag_id = f"tag-{name.lower().replace(' ', '-')[:20]}"
     tag = {
-        "id": f"tag-{name.lower().replace(' ', '-')[:20]}",
+        "tag_id": tag_id,
         "name": name,
         "slug": name.lower().replace(" ", "-"),
         "color": data.get("color", "#9ca3af"),
     }
-    tags.append(tag)
-    _write_meta("tags", tags)
+    convex_db.create_tag(tag)
+    tag["id"] = tag_id
     return tag
 
 
 def update_tag(tag_id: str, data: dict) -> Optional[dict]:
-    tags = _read_meta("tags")
-    for t in tags:
-        if t["id"] == tag_id:
-            for k, v in data.items():
-                if k != "id":
-                    t[k] = v
-            _write_meta("tags", tags)
-            return t
-    return None
+    convex_db.update_tag(tag_id, {k: v for k, v in data.items() if k not in ("id", "tag_id")})
+    tags = list_tags()
+    return next((t for t in tags if t.get("id") == tag_id or t.get("tag_id") == tag_id), None)
 
 
 def delete_tag(tag_id: str) -> bool:
-    tags = _read_meta("tags")
-    filtered = [t for t in tags if t["id"] != tag_id]
-    if len(filtered) == len(tags):
-        return False
-    _write_meta("tags", filtered)
-    return True
+    result = convex_db.delete_tag(tag_id)
+    return result is not None
 
 
 # --- Analytics ---
@@ -583,7 +481,7 @@ def get_workload_scores() -> list[dict]:
         weighted = 0
         for t in tasks:
             dl = t.get("when_date") or t.get("deadline")
-            weighted += 1  # base
+            weighted += 1
             if dl and dl < today_str:
                 overdue += 1
                 days_over = (date.today() - date.fromisoformat(dl)).days
@@ -639,7 +537,8 @@ def get_risk_flags() -> dict:
 
     project_risks = []
     for p in projects:
-        ptasks = [t for t in all_tasks if t.get("project_id") == p["id"]]
+        pid = p.get("id") or p.get("project_id")
+        ptasks = [t for t in all_tasks if t.get("project_id") == pid]
         active_p = [t for t in ptasks if _is_active(t)]
         overdue_p = [t for t in active_p if (t.get("when_date") or t.get("deadline") or "") < today_str and (t.get("when_date") or t.get("deadline"))]
         reasons = []
@@ -649,7 +548,7 @@ def get_risk_flags() -> dict:
             reasons.append(f"High task load ({len(active_p)})")
         risk = "high" if len(overdue_p) >= 2 else "medium" if len(overdue_p) >= 1 or len(active_p) > 5 else "low"
         if reasons:
-            project_risks.append({"project_id": p["id"], "project_name": p["name"], "risk_level": risk, "reasons": reasons})
+            project_risks.append({"project_id": pid, "project_name": p["name"], "risk_level": risk, "reasons": reasons})
 
     overdue_tasks = []
     for t in all_tasks:
@@ -682,7 +581,7 @@ def get_velocity(period_days: int = 7) -> dict:
 def get_project_burndown(project_id: str) -> dict:
     all_tasks = _read_all_tasks()
     projects = list_projects()
-    proj = next((p for p in projects if p["id"] == project_id), None)
+    proj = next((p for p in projects if p.get("id") == project_id or p.get("project_id") == project_id), None)
     ptasks = [t for t in all_tasks if t.get("project_id") == project_id]
     total = len(ptasks)
     done = len([t for t in ptasks if t.get("status") in COMPLETED_STATUSES])

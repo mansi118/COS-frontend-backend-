@@ -24,7 +24,11 @@ export const create = mutation({
     phase: v.optional(v.string()),
     contract_value: v.optional(v.string()),
     health_score: v.optional(v.number()),
+    last_interaction: v.optional(v.string()),
+    last_interaction_type: v.optional(v.string()),
     sentiment: v.optional(v.string()),
+    overdue_invoices: v.optional(v.number()),
+    deliverables_on_track: v.optional(v.boolean()),
     created_at: v.optional(v.string()),
   },
   handler: async (ctx, args) => {

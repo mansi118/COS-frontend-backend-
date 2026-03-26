@@ -1,7 +1,6 @@
 from fastapi import APIRouter
 import convex_db
 from datetime import date
-import cos_reader
 
 router = APIRouter(prefix="/api/briefing", tags=["briefing"])
 
@@ -12,11 +11,11 @@ def morning_briefing():
     today_str = today.isoformat()
 
     # Primary: CoS workspace
-    followups = cos_reader.get_all_followups()
-    meetings = cos_reader.get_meetings(today_str)
-    perf_data = cos_reader.get_performance_data()
-    cos_sprint = cos_reader.get_active_sprint()
-    clients = cos_reader.get_all_clients()
+    followups = convex_db.list_followups() or []
+    meetings_data = convex_db.get_meetings(today_str)
+    perf_data = convex_db.list_performance() or []
+    cos_sprint = convex_db.get_active_sprint()
+    clients = convex_db.list_clients() or []
 
     if followups is not None:
         active_fus = [f for f in followups if f.get("status") in ("open", "in_progress")]
@@ -57,8 +56,8 @@ def morning_briefing():
 
         # Meetings
         meeting_list = []
-        if meetings:
-            for m in meetings.get("meetings", meetings.get("events", [])):
+        if meetings_data:
+            for m in meetings_data.get("meetings", meetings_data.get("events", [])):
                 meeting_list.append({
                     "title": m.get("summary", m.get("title", "")),
                     "start": m.get("start", ""),
@@ -71,7 +70,7 @@ def morning_briefing():
         # Overdue details
         overdue_details = [
             {
-                "fu_id": f.get("id"),
+                "fu_id": f.get("fu_id", f.get("id")),
                 "what": f.get("what"),
                 "who": f.get("who"),
                 "due": f.get("due"),
@@ -134,8 +133,9 @@ def eod_summary():
     today_str = today.isoformat()
 
     # Primary: CoS workspace EOD snapshot
-    eod = cos_reader.get_eod_snapshot()
-    followups = cos_reader.get_all_followups()
+    eod_data = convex_db.get_eod_snapshot()
+    eod = eod_data.get("data") if eod_data else None
+    followups = convex_db.list_followups() or []
 
     if eod:
         summary = eod.get("summary", {})
