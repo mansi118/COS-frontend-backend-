@@ -20,6 +20,16 @@ def _get_roster_map():
     return _roster_cache
 
 
+def _safe_audio_url(audio_key: str) -> str:
+    """Get audio URL, gracefully handling missing boto3."""
+    if not audio_key:
+        return None
+    try:
+        return get_audio_url(audio_key)
+    except Exception:
+        return audio_key  # Return raw key as fallback
+
+
 def _vu_to_api(vu: dict) -> dict:
     """Convert CoS JSON voice update to API response."""
     who = vu.get("who")
@@ -30,7 +40,7 @@ def _vu_to_api(vu: dict) -> dict:
         "who": who,
         "who_name": who_name,
         "type": vu.get("type", "general"),
-        "audio_url": get_audio_url(audio_key) if audio_key else None,
+        "audio_url": _safe_audio_url(audio_key),
         "audio_format": vu.get("audio_format", "webm"),
         "duration_sec": vu.get("duration_sec"),
         "transcript": vu.get("transcript"),

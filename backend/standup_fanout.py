@@ -146,26 +146,6 @@ def create_followup_from_standup(
         "checklist": cos_data.get("checklist_items"), "created_at": cos_data.get("created"), "updated_at": cos_data.get("updated"),
     }.items() if v is not None})
 
-    # Also write to Convex (replaces PostgreSQL)
-    try:
-        import convex_db
-        convex_db.insert_followup({
-            "fu_id": fu_id,
-            "what": f"Daily commitments — {person_name}",
-            "who": person,
-            "due": date_str,
-            "priority": _highest_priority(items),
-            "status": "open",
-            "source": "standup",
-            "source_id": source_id,
-            "notes": f"Auto-created from standup on {date_str}",
-            "checklist": checklist,
-            "created_at": now,
-            "updated_at": now,
-        })
-    except Exception:
-        pass  # Convex write is best-effort; CoS JSON is source of truth
-
     return fu_id
 
 
@@ -316,26 +296,6 @@ def create_followups_from_meeting(
         "checklist": cos_data.get("checklist_items"), "created_at": cos_data.get("created"), "updated_at": cos_data.get("updated"),
     }.items() if v is not None})
 
-    # Convex write
-    try:
-        import convex_db
-        convex_db.insert_followup({
-            "fu_id": fu_id,
-            "what": f"Meeting action items — {title}",
-            "who": None,
-            "due": due,
-            "priority": _highest_priority(checklist),
-            "status": "open",
-            "source": "meeting",
-            "source_id": transcript_id,
-            "notes": f"Auto-extracted from meeting on {meeting_date}",
-            "checklist": checklist,
-            "created_at": now,
-            "updated_at": now,
-        })
-    except Exception:
-        pass
-
     # Also create task in TaskFlow
     try:
         taskflow_local.create_task({
@@ -411,19 +371,6 @@ def confirm_checklist_resolution(fu_id: str, item_index: int, db=None) -> dict:
 
     convex_db.update_followup(fu_id, {k: v for k, v in {"status": fu.get("status"), "resolved_at": fu.get("resolved_at"), "checklist": fu.get("checklist_items"), "updated_at": fu.get("updated")}.items() if v is not None})
 
-    # Update Convex
-    try:
-        import convex_db
-        updates = {"checklist": checklist, "updated_at": datetime.utcnow().isoformat()}
-        if all_done:
-            updates["status"] = "resolved"
-            updates["resolved_at"] = datetime.utcnow().isoformat()
-        elif was_completed:
-            updates["status"] = "open"
-            updates["resolved_at"] = None
-        convex_db.update_followup(fu_id, updates)
-    except Exception:
-        pass
 
     now_completed = not was_completed
     return {

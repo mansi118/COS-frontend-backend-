@@ -15,9 +15,34 @@ Usage:
 """
 
 import os
+import time
+import json as _json
 from typing import Optional, Any
 
 CONVEX_URL = os.getenv("CONVEX_URL", "")
+
+# --- In-memory TTL cache for read queries ---
+_cache: dict[str, tuple[Any, float]] = {}
+
+def _cached_query(function_name: str, args: dict = None, ttl: int = 30) -> Optional[Any]:
+    """Query with TTL cache. Avoids redundant Convex HTTP calls within a request."""
+    args_key = _json.dumps(args or {}, sort_keys=True)
+    cache_key = f"{function_name}:{args_key}"
+    if cache_key in _cache:
+        val, ts = _cache[cache_key]
+        if time.time() - ts < ttl:
+            return val
+    result = query(function_name, args)
+    _cache[cache_key] = (result, time.time())
+    return result
+
+def _invalidate_cache(prefix: str = None):
+    """Clear cache entries. If prefix given, only clear matching keys."""
+    global _cache
+    if prefix:
+        _cache = {k: v for k, v in _cache.items() if not k.startswith(prefix)}
+    else:
+        _cache = {}
 
 _client = None
 
@@ -93,6 +118,7 @@ def get_mode() -> str:
 
 def insert_followup(data: dict) -> Optional[str]:
     """Insert a follow-up into Convex. Returns document ID or None."""
+    _invalidate_cache("followups:")
     return mutate("followups:create", data)
 
 
@@ -102,18 +128,20 @@ def get_followup(fu_id: str) -> Optional[dict]:
 
 
 def list_followups(**filters) -> Optional[list]:
-    """List follow-ups with optional filters."""
+    """List follow-ups with optional filters (cached 30s)."""
     clean = {k: v for k, v in filters.items() if v is not None}
-    return query("followups:list", clean)
+    return _cached_query("followups:list", clean, ttl=30)
 
 
 def update_followup(fu_id: str, updates: dict) -> Optional[str]:
     """Update a follow-up."""
+    _invalidate_cache("followups:")
     return mutate("followups:update", {"fu_id": fu_id, **updates})
 
 
 def delete_followup(fu_id: str) -> Optional[bool]:
     """Delete a follow-up."""
+    _invalidate_cache("followups:")
     return mutate("followups:remove", {"fu_id": fu_id})
 
 
@@ -138,13 +166,13 @@ def delete_voice_update(vu_id: str) -> Optional[bool]:
 
 
 def list_team_members() -> Optional[list]:
-    """List all team members."""
-    return query("team_members:list")
+    """List all team members (cached 60s)."""
+    return _cached_query("team_members:list", {}, ttl=60)
 
 
 def get_active_sprint() -> Optional[dict]:
-    """Get the active sprint."""
-    return query("sprints:getActive")
+    """Get the active sprint (cached 60s)."""
+    return _cached_query("sprints:getActive", {}, ttl=60)
 
 
 def insert_sprint_update(data: dict) -> Optional[str]:
@@ -153,8 +181,8 @@ def insert_sprint_update(data: dict) -> Optional[str]:
 
 
 def list_clients() -> Optional[list]:
-    """List all clients."""
-    return query("clients:list")
+    """List all clients (cached 30s)."""
+    return _cached_query("clients:list", {}, ttl=30)
 
 
 def insert_notification(data: dict) -> Optional[str]:
@@ -163,8 +191,8 @@ def insert_notification(data: dict) -> Optional[str]:
 
 
 def get_performance(person: str) -> Optional[dict]:
-    """Get latest performance snapshot for a person."""
-    return query("performance:getByPerson", {"person": person})
+    """Get latest performance snapshot for a person (cached 60s)."""
+    return _cached_query("performance:getByPerson", {"person": person}, ttl=60)
 
 
 def insert_board_snapshot(data: dict) -> Optional[str]:
@@ -241,8 +269,8 @@ def insert_client_contact(data: dict) -> Optional[str]:
 # --- Performance wrappers ---
 
 def list_performance() -> Optional[list]:
-    """List all performance snapshots."""
-    return query("performance:listAll")
+    """List all performance snapshots (cached 60s)."""
+    return _cached_query("performance:listAll", {}, ttl=60)
 
 
 def create_performance(data: dict) -> Optional[str]:
@@ -412,8 +440,8 @@ def delete_tag(tag_id: str) -> Optional[str]:
 # --- Notification config wrappers ---
 
 def get_notification_routes() -> Optional[dict]:
-    """Get the team notification config (contacts, routes, slack channels)."""
-    return query("notification_config:get")
+    """Get the team notification config (cached 120s)."""
+    return _cached_query("notification_config:get", {}, ttl=120)
 
 
 def set_notification_routes(data: dict) -> Optional[str]:

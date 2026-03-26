@@ -315,14 +315,14 @@ def get_sprint_standup_activity():
 
     days = []
     mood_trend = []
+    roster = convex_db.list_team_members() or []
+    total = len(roster)
 
     for d in range(elapsed_days + 1):
         current_date = (start_date + timedelta(days=d)).strftime("%Y-%m-%d")
         standups = standup_local.get_standups_by_date(current_date)
 
         posted = len(standups)
-        roster = convex_db.list_team_members() or []
-        total = len(roster)
 
         moods = [mood_values.get(s.get("mood", "neutral"), 3) for s in standups]
         avg_mood_score = round(sum(moods) / len(moods)) if moods else 3
