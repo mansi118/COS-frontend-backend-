@@ -32,6 +32,27 @@ export const create = mutation({
   },
 });
 
+export const insertContact = mutation({
+  args: {
+    client_slug: v.string(),
+    name: v.optional(v.string()),
+    email: v.optional(v.string()),
+    role: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    return await ctx.db.insert("client_contacts", args);
+  },
+});
+
+export const listContacts = query({
+  args: { client_slug: v.string() },
+  handler: async (ctx, args) => {
+    return await ctx.db.query("client_contacts")
+      .withIndex("by_client", q => q.eq("client_slug", args.client_slug))
+      .collect();
+  },
+});
+
 export const update = mutation({
   args: {
     slug: v.string(),

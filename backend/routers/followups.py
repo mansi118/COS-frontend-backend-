@@ -90,21 +90,27 @@ def create_followup(data: FollowupCreate):
     }
     cos_reader.write_followup(fu_id, cos_data)
 
-    # Also write to Convex
-    convex_db.insert_followup({
+    # Also write to Convex (strip None values — Convex rejects null for optional fields)
+    cvx_data = {
         "fu_id": fu_id,
         "what": data.what,
         "who": data.who,
-        "due": str(data.due) if data.due else None,
         "priority": data.priority or "P2",
         "status": "open",
-        "source": data.source,
-        "source_id": data.source_id,
-        "notes": data.notes,
-        "checklist": data.checklist,
         "created_at": now,
         "updated_at": now,
-    })
+    }
+    if data.due:
+        cvx_data["due"] = str(data.due)
+    if data.source:
+        cvx_data["source"] = data.source
+    if data.source_id:
+        cvx_data["source_id"] = data.source_id
+    if data.notes:
+        cvx_data["notes"] = data.notes
+    if data.checklist:
+        cvx_data["checklist"] = data.checklist
+    convex_db.insert_followup(cvx_data)
 
     return _cos_to_api(cos_data, 1)
 

@@ -1,7 +1,6 @@
 from fastapi import APIRouter, BackgroundTasks
 import convex_db
-from models import Sprint, Followup, TeamMember, SprintUpdate, NotificationLog
-from schemas import SprintCreate, SprintOut, SprintUpdateCreate, SprintUpdateOut, SendUpdatesRequest
+from schemas import SprintCreate, SprintUpdateCreate, SendUpdatesRequest
 from datetime import date, datetime, timedelta
 import smtplib
 import os
@@ -10,14 +9,6 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import cos_reader
 import standup_local
-
-# Optional DB fallback (PostgreSQL)
-try:
-    from database import get_db as _get_db
-    from sqlalchemy.orm import Session as _Session
-    _DB_AVAILABLE = True
-except Exception:
-    _DB_AVAILABLE = False
 
 router = APIRouter(prefix="/api/sprint", tags=["sprint"])
 
@@ -38,11 +29,11 @@ def send_slack_notification(update: dict, member: dict):
         return False
     try:
         import urllib.request
-        mood_emoji = {"great": "^", "good": "^", "neutral": "~", "struggling": "!", "blocked": "!!"}.get(update["mood"], "~")
+        mood_emoji = {"great": "^", "good": "^", "neutral": "~", "struggling": "!", "blocked": "!!"}.get(update.get("mood", ""), "~")
         payload = {
             "text": f"*Weekly Sprint Update -- {member['name']}*\n"
                     f"*Week:* {update['week_label']}\n"
-                    f"*Mood:* {mood_emoji} {update['mood']}\n\n"
+                    f"*Mood:* {mood_emoji} {update.get('mood', '')}\n\n"
                     f"*Accomplished:*\n{update['accomplished']}\n\n"
                     f"*Blockers:* {update.get('blockers') or 'None'}\n\n"
                     f"*Plan Next Week:* {update.get('plan_next_week') or 'N/A'}"
@@ -73,7 +64,7 @@ def send_email_notification(update: dict, member: dict, recipients: list[str]):
 <div style="padding: 24px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px;">
   <h3>{member['name']} -- {member.get('role', '')}</h3>
   <p><strong>Week:</strong> {update['week_label']}</p>
-  <p><strong>Mood:</strong> {update['mood']}</p>
+  <p><strong>Mood:</strong> {update.get('mood', '')}</p>
   <h4>Accomplished</h4>
   <p>{update['accomplished']}</p>
   <h4>Blockers</h4>
@@ -99,50 +90,58 @@ def send_email_notification(update: dict, member: dict, recipients: list[str]):
         return False
 
 
-def _do_send_updates(update_ids: list[int], channel: str, db_url: str):
-    """Background task: send notifications for given update IDs."""
-    from database import SessionLocal
-    db = SessionLocal()
+def _do_send_updates(update_ids: list[str], channel: str):
+    """Background task: send notifications for given sprint update Convex IDs."""
     try:
+        members = convex_db.list_team_members() or []
+        member_map = {m.get("slug"): m for m in members}
+        all_emails = [m.get("email") for m in members if m.get("email")]
+
         for uid in update_ids:
-            update = db.query(SprintUpdate).filter(SprintUpdate.id == uid).first()
+            update = convex_db.get_sprint_update(uid)
             if not update:
                 continue
-            member = db.query(TeamMember).filter(TeamMember.slug == update.person).first()
+            member = member_map.get(update.get("person"), {})
             if not member:
                 continue
 
             update_dict = {
-                "week_label": update.week_label,
-                "accomplished": update.accomplished,
-                "blockers": update.blockers,
-                "plan_next_week": update.plan_next_week,
-                "mood": update.mood,
+                "week_label": update.get("week_label", ""),
+                "accomplished": update.get("accomplished", ""),
+                "blockers": update.get("blockers"),
+                "plan_next_week": update.get("plan_next_week"),
+                "mood": update.get("mood"),
             }
             member_dict = {
-                "name": member.name,
-                "emoji": member.emoji,
-                "role": member.role,
-                "email": member.email,
+                "name": member.get("name", ""),
+                "emoji": member.get("emoji", ""),
+                "role": member.get("role", ""),
+                "email": member.get("email", ""),
             }
-
-            all_emails = [m.email for m in db.query(TeamMember).all() if m.email]
 
             if channel in ("slack", "all"):
                 ok = send_slack_notification(update_dict, member_dict)
                 if ok:
-                    update.notified_slack = True
-                    db.add(NotificationLog(update_id=uid, channel="slack", recipient="team-channel", status="sent"))
+                    convex_db.patch_sprint_update(uid, {"notified_slack": True})
+                    convex_db.insert_notification({
+                        "channel": "slack",
+                        "recipient": "team-channel",
+                        "status": "sent",
+                        "sent_at": datetime.utcnow().isoformat(),
+                    })
 
             if channel in ("email", "all"):
                 ok = send_email_notification(update_dict, member_dict, all_emails)
                 if ok:
-                    update.notified_email = True
-                    db.add(NotificationLog(update_id=uid, channel="email", recipient=", ".join(all_emails), status="sent"))
-
-        db.commit()
-    finally:
-        db.close()
+                    convex_db.patch_sprint_update(uid, {"notified_email": True})
+                    convex_db.insert_notification({
+                        "channel": "email",
+                        "recipient": ", ".join(all_emails),
+                        "status": "sent",
+                        "sent_at": datetime.utcnow().isoformat(),
+                    })
+    except Exception as e:
+        print(f"[sprint] _do_send_updates error: {e}")
 
 
 # --- Sprint endpoints ---
@@ -212,31 +211,33 @@ def get_current_sprint():
             "velocity": velocity,
         }
 
-    # Fallback to DB
-    sprint = db.query(Sprint).filter(Sprint.status == "active").first()
+    # Fallback: Convex
+    sprint = convex_db.get_active_sprint()
     if not sprint:
         return {"error": "No active sprint"}
 
-    total_days = (sprint.end_date - sprint.start_date).days or 1
-    elapsed_days = (today - sprint.start_date).days
-    time_pct = min(round((elapsed_days / total_days) * 100), 100)
+    try:
+        start_date = date.fromisoformat(sprint["start_date"])
+        end_date = date.fromisoformat(sprint["end_date"])
+    except (ValueError, TypeError, KeyError):
+        return {"error": "Invalid sprint dates"}
 
-    total_tasks = db.query(Followup).filter(
-        Followup.created_at >= str(sprint.start_date)
-    ).count()
-    done_tasks = db.query(Followup).filter(
-        Followup.created_at >= str(sprint.start_date),
-        Followup.status == "resolved",
-    ).count()
+    total_days = (end_date - start_date).days or 1
+    elapsed_days = (today - start_date).days
+    time_pct = min(round((elapsed_days / total_days) * 100), 100)
+    fus = convex_db.list_followups() or []
+    sprint_fus = [f for f in fus if (f.get("created_at", "")[:10] or "") >= sprint["start_date"]]
+    total_tasks = len(sprint_fus)
+    done_tasks = len([f for f in sprint_fus if f.get("status") == "resolved"])
     done_pct = round((done_tasks / total_tasks) * 100) if total_tasks else 0
 
     return {
-        "id": sprint.id,
-        "name": sprint.name,
-        "start_date": str(sprint.start_date),
-        "end_date": str(sprint.end_date),
-        "goals": sprint.goals,
-        "status": sprint.status,
+        "id": 1,
+        "name": sprint.get("name", ""),
+        "start_date": sprint["start_date"],
+        "end_date": sprint["end_date"],
+        "goals": sprint.get("goals", []),
+        "status": sprint.get("status", "active"),
         "total_tasks": total_tasks,
         "done_tasks": done_tasks,
         "done_pct": done_pct,
@@ -291,33 +292,7 @@ def get_burndown():
             "actual": actual,
         }
 
-    # Fallback to DB
-    sprint = db.query(Sprint).filter(Sprint.status == "active").first()
-    if not sprint:
-        return {"error": "No active sprint"}
-
-    total_days = (sprint.end_date - sprint.start_date).days
-    total_tasks = db.query(Followup).filter(
-        Followup.created_at >= str(sprint.start_date)
-    ).count()
-
-    ideal = []
-    actual = []
-    for day in range(total_days + 1):
-        ideal.append({
-            "day": day,
-            "remaining": round(total_tasks * (1 - day / total_days), 1),
-        })
-        if day <= (today - sprint.start_date).days:
-            noise = max(0, total_tasks * (1 - day / total_days) + (day % 3) - 1)
-            actual.append({"day": day, "remaining": round(noise, 1)})
-
-    return {
-        "sprint": sprint.name,
-        "total_tasks": total_tasks,
-        "ideal": ideal,
-        "actual": actual,
-    }
+    return {"error": "No active sprint", "ideal": [], "actual": []}
 
 
 @router.get("/standup-activity")
@@ -350,17 +325,14 @@ def get_sprint_standup_activity():
         roster = cos_reader.get_team_roster() or []
         total = len(roster)
 
-        # Mood average
         moods = [mood_values.get(s.get("mood", "neutral"), 3) for s in standups]
         avg_mood_score = round(sum(moods) / len(moods)) if moods else 3
         avg_mood = mood_names.get(avg_mood_score, "neutral")
 
-        # Highlights from done text
         highlights = []
         for s in standups:
             highlights.extend(s.get("highlights", [])[:2])
 
-        # Blockers count
         blockers = len([s for s in standups if s.get("blockers")])
 
         days.append({
@@ -384,8 +356,31 @@ def get_sprint_standup_activity():
 @router.post("/updates/auto-generate")
 def auto_generate_weekly_updates():
     """Auto-generate weekly updates from daily standups for the current week."""
-    sprint = db.query(Sprint).filter(Sprint.status == "active").first()
-    if not sprint:
+    # Try CoS first, then Convex
+    cos_sprint = cos_reader.get_active_sprint()
+    sprint_id = None
+
+    if cos_sprint:
+        # Get or create Convex sprint record for storing updates
+        cvx_sprint = convex_db.get_active_sprint()
+        if cvx_sprint:
+            sprint_id = cvx_sprint.get("_id")
+        else:
+            # Create sprint in Convex from CoS data
+            sprint_id = convex_db.create_sprint({
+                "name": cos_sprint.get("name", ""),
+                "start_date": cos_sprint.get("start", cos_sprint.get("start_date", "")),
+                "end_date": cos_sprint.get("end", cos_sprint.get("end_date", "")),
+                "goals": cos_sprint.get("goals", []),
+                "status": "active",
+                "created_at": datetime.utcnow().isoformat(),
+            })
+    else:
+        cvx_sprint = convex_db.get_active_sprint()
+        if cvx_sprint:
+            sprint_id = cvx_sprint.get("_id")
+
+    if not sprint_id:
         return {"error": "No active sprint", "created": 0}
 
     today = date.today()
@@ -393,18 +388,13 @@ def auto_generate_weekly_updates():
     year = today.year
     week_label = f"W{week_num}-{year}"
 
-    # Get Monday of current week
     monday = today - timedelta(days=today.weekday())
     weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri']
 
     # Check who already has updates this week
-    existing = db.query(SprintUpdate).filter(
-        SprintUpdate.sprint_id == sprint.id,
-        SprintUpdate.week_label == week_label,
-    ).all()
-    existing_persons = {u.person for u in existing}
+    existing_updates = convex_db.list_sprint_updates(sprint_id=sprint_id, week_label=week_label) or []
+    existing_persons = {u.get("person") for u in existing_updates}
 
-    # Get team roster
     roster = cos_reader.get_team_roster() or []
     mood_values = {"great": 5, "good": 4, "neutral": 3, "struggling": 2, "blocked": 1}
     mood_names = {5: "great", 4: "good", 3: "neutral", 2: "struggling", 1: "blocked"}
@@ -448,25 +438,27 @@ def auto_generate_weekly_updates():
             moods.append(mood_values.get(mood, 3))
 
         if not accomplished_parts:
-            continue  # No standups this week for this person
+            continue
 
         accomplished = "\n".join(accomplished_parts)
         avg_mood = round(sum(moods) / len(moods)) if moods else 3
         mood_str = mood_names.get(avg_mood, "neutral")
 
-        update = SprintUpdate(
-            sprint_id=sprint.id,
-            person=slug,
-            week_label=week_label,
-            accomplished=accomplished,
-            blockers=latest_blockers,
-            plan_next_week=latest_doing,
-            mood=mood_str,
-        )
-        db.add(update)
-        created.append(slug)
+        update_data = {
+            "sprint_id": sprint_id,
+            "person": slug,
+            "week_label": week_label,
+            "accomplished": accomplished,
+            "mood": mood_str,
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        if latest_blockers:
+            update_data["blockers"] = latest_blockers
+        if latest_doing:
+            update_data["plan_next_week"] = latest_doing
 
-    db.commit()
+        convex_db.insert_sprint_update(update_data)
+        created.append(slug)
 
     return {
         "status": "generated",
@@ -478,37 +470,69 @@ def auto_generate_weekly_updates():
     }
 
 
-@router.post("", response_model=SprintOut)
+@router.post("")
 def create_sprint(data: SprintCreate):
-    active = db.query(Sprint).filter(Sprint.status == "active").first()
-    if active:
-        active.status = "closed"
+    now = datetime.utcnow().isoformat()
 
-    sprint = Sprint(**data.model_dump(), status="active")
-    db.add(sprint)
-    db.commit()
-    db.refresh(sprint)
-    return sprint
+    sprint_data = {
+        "name": data.name,
+        "start_date": str(data.start_date),
+        "end_date": str(data.end_date),
+        "status": "active",
+        "created_at": now,
+    }
+    if data.goals:
+        sprint_data["goals"] = data.goals
+
+    sprint_id = convex_db.create_sprint(sprint_data)
+
+    return {
+        "id": 1,
+        "name": data.name,
+        "start_date": str(data.start_date),
+        "end_date": str(data.end_date),
+        "goals": data.goals or [],
+        "status": "active",
+        "created_at": now,
+        "_id": sprint_id,
+    }
 
 
 # --- Weekly Updates ---
 
-@router.get("/updates", response_model=list[SprintUpdateOut])
+@router.get("/updates")
 def list_sprint_updates(week: str = None, person: str = None):
-    sprint = db.query(Sprint).filter(Sprint.status == "active").first()
+    sprint = convex_db.get_active_sprint()
     if not sprint:
         return []
-    q = db.query(SprintUpdate).filter(SprintUpdate.sprint_id == sprint.id)
-    if week:
-        q = q.filter(SprintUpdate.week_label == week)
-    if person:
-        q = q.filter(SprintUpdate.person == person)
-    return q.order_by(SprintUpdate.created_at.desc()).all()
+    sprint_id = sprint.get("_id")
+    updates = convex_db.list_sprint_updates(sprint_id=sprint_id, week_label=week, person=person) or []
+
+    # Resolve names
+    members = convex_db.list_team_members() or []
+    member_map = {m.get("slug"): m for m in members}
+
+    return [
+        {
+            "id": u.get("_id", ""),
+            "person": u.get("person", ""),
+            "name": member_map.get(u.get("person"), {}).get("name", u.get("person", "")),
+            "week_label": u.get("week_label"),
+            "accomplished": u.get("accomplished", ""),
+            "blockers": u.get("blockers"),
+            "plan_next_week": u.get("plan_next_week"),
+            "mood": u.get("mood"),
+            "notified_slack": u.get("notified_slack", False),
+            "notified_email": u.get("notified_email", False),
+            "created_at": u.get("created_at"),
+        }
+        for u in updates
+    ]
 
 
-@router.post("/updates", response_model=SprintUpdateOut)
+@router.post("/updates")
 def create_sprint_update(data: SprintUpdateCreate):
-    sprint = db.query(Sprint).filter(Sprint.status == "active").first()
+    sprint = convex_db.get_active_sprint()
     if not sprint:
         return {"error": "No active sprint"}
 
@@ -517,47 +541,63 @@ def create_sprint_update(data: SprintUpdateCreate):
         today = date.today()
         week_label = f"W{today.isocalendar()[1]}-{today.year}"
 
-    update = SprintUpdate(
-        sprint_id=sprint.id,
-        person=data.person,
-        week_label=week_label,
-        accomplished=data.accomplished,
-        blockers=data.blockers,
-        plan_next_week=data.plan_next_week,
-        mood=data.mood or "neutral",
-    )
-    db.add(update)
-    db.commit()
-    db.refresh(update)
-    return update
+    update_data = {
+        "sprint_id": sprint["_id"],
+        "person": data.person,
+        "week_label": week_label,
+        "accomplished": data.accomplished,
+        "mood": data.mood or "neutral",
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    if data.blockers:
+        update_data["blockers"] = data.blockers
+    if data.plan_next_week:
+        update_data["plan_next_week"] = data.plan_next_week
+
+    update_id = convex_db.insert_sprint_update(update_data)
+
+    return {
+        "id": update_id,
+        "person": data.person,
+        "week_label": week_label,
+        "accomplished": data.accomplished,
+        "blockers": data.blockers,
+        "plan_next_week": data.plan_next_week,
+        "mood": data.mood or "neutral",
+        "created_at": update_data["created_at"],
+    }
 
 
 @router.get("/updates/by-week")
 def get_updates_grouped_by_week():
-    sprint = db.query(Sprint).filter(Sprint.status == "active").first()
+    sprint = convex_db.get_active_sprint()
     if not sprint:
         return {"weeks": []}
-    updates = db.query(SprintUpdate).filter(SprintUpdate.sprint_id == sprint.id).order_by(SprintUpdate.created_at.desc()).all()
-    members = {m.slug: {"name": m.name, "emoji": m.emoji, "role": m.role, "email": m.email} for m in db.query(TeamMember).all()}
+
+    updates = convex_db.list_sprint_updates(sprint_id=sprint["_id"]) or []
+    members = convex_db.list_team_members() or []
+    member_map = {m.get("slug"): m for m in members}
 
     weeks: dict = {}
     for u in updates:
-        wk = u.week_label or "unknown"
+        wk = u.get("week_label") or "unknown"
         if wk not in weeks:
             weeks[wk] = []
+        slug = u.get("person", "")
+        m = member_map.get(slug, {})
         weeks[wk].append({
-            "id": u.id,
-            "person": u.person,
-            "name": members.get(u.person, {}).get("name", u.person),
-            "emoji": members.get(u.person, {}).get("emoji", ""),
-            "role": members.get(u.person, {}).get("role", ""),
-            "accomplished": u.accomplished,
-            "blockers": u.blockers,
-            "plan_next_week": u.plan_next_week,
-            "mood": u.mood,
-            "notified_slack": u.notified_slack,
-            "notified_email": u.notified_email,
-            "created_at": str(u.created_at) if u.created_at else None,
+            "id": u.get("_id", ""),
+            "person": slug,
+            "name": m.get("name", slug),
+            "emoji": m.get("emoji", ""),
+            "role": m.get("role", ""),
+            "accomplished": u.get("accomplished", ""),
+            "blockers": u.get("blockers"),
+            "plan_next_week": u.get("plan_next_week"),
+            "mood": u.get("mood"),
+            "notified_slack": u.get("notified_slack", False),
+            "notified_email": u.get("notified_email", False),
+            "created_at": u.get("created_at"),
         })
 
     return {"weeks": [{"week": wk, "updates": items} for wk, items in weeks.items()]}
@@ -568,30 +608,30 @@ def get_updates_grouped_by_week():
 @router.post("/updates/send")
 def send_sprint_updates(req: SendUpdatesRequest, background_tasks: BackgroundTasks):
     """Send all updates for a given week (or latest) via Slack and/or email."""
-    sprint = db.query(Sprint).filter(Sprint.status == "active").first()
+    sprint = convex_db.get_active_sprint()
     if not sprint:
         return {"error": "No active sprint"}
 
-    q = db.query(SprintUpdate).filter(SprintUpdate.sprint_id == sprint.id)
-    if req.week_label:
-        q = q.filter(SprintUpdate.week_label == req.week_label)
-    else:
-        latest = q.order_by(SprintUpdate.created_at.desc()).first()
-        if latest:
-            q = q.filter(SprintUpdate.week_label == latest.week_label)
+    updates = convex_db.list_sprint_updates(sprint_id=sprint["_id"]) or []
 
-    updates = q.all()
+    if req.week_label:
+        updates = [u for u in updates if u.get("week_label") == req.week_label]
+    elif updates:
+        # Get latest week
+        latest_week = updates[-1].get("week_label")
+        updates = [u for u in updates if u.get("week_label") == latest_week]
+
     if not updates:
         return {"error": "No updates found to send", "sent": 0}
 
-    update_ids = [u.id for u in updates]
-    background_tasks.add_task(_do_send_updates, update_ids, req.channel, "")
+    update_ids = [u["_id"] for u in updates]
+    background_tasks.add_task(_do_send_updates, update_ids, req.channel)
 
     return {
         "status": "sending",
         "channel": req.channel,
         "update_count": len(update_ids),
-        "week": updates[0].week_label,
+        "week": updates[0].get("week_label"),
         "message": f"Sending {len(update_ids)} updates via {req.channel}",
     }
 
@@ -599,15 +639,14 @@ def send_sprint_updates(req: SendUpdatesRequest, background_tasks: BackgroundTas
 @router.get("/updates/notifications")
 def get_notification_history():
     """Get notification send history."""
-    logs = db.query(NotificationLog).order_by(NotificationLog.sent_at.desc()).limit(50).all()
+    logs = convex_db.list_notifications(50) or []
     return [
         {
-            "id": l.id,
-            "update_id": l.update_id,
-            "channel": l.channel,
-            "recipient": l.recipient,
-            "status": l.status,
-            "sent_at": str(l.sent_at) if l.sent_at else None,
+            "id": l.get("_id", ""),
+            "channel": l.get("channel", ""),
+            "recipient": l.get("recipient", ""),
+            "status": l.get("status", ""),
+            "sent_at": l.get("sent_at"),
         }
         for l in logs
     ]

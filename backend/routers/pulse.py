@@ -1,6 +1,5 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 import convex_db
-from models import TeamMember, Followup, PerformanceSnapshot, BoardSnapshot
 from datetime import date, timedelta
 import json
 import os
@@ -8,14 +7,6 @@ import cos_reader
 
 COS_WORKSPACE = os.getenv("COS_WORKSPACE", "/home/mansigambhir/.openclaw/workspace")
 PULSE_SNAPSHOTS_DIR = os.path.join(COS_WORKSPACE, "data", "pulse-snapshots")
-
-# Optional DB fallback (PostgreSQL)
-try:
-    from database import get_db as _get_db
-    from sqlalchemy.orm import Session as _Session
-    _DB_AVAILABLE = True
-except Exception:
-    _DB_AVAILABLE = False
 
 router = APIRouter(prefix="/api/pulse", tags=["pulse"])
 
@@ -162,58 +153,42 @@ def get_pulse_board():
             "date": board_snapshot.get("date", str(today)),
         }
 
-    # Fallback to DB
-    members = db.query(TeamMember).all()
+    # Fallback: Convex
+    members = convex_db.list_team_members() or []
+    fus = convex_db.list_followups() or []
     board = []
     total_active = 0
     total_done = 0
     total_overdue = 0
-    reliability_scores = []
 
     for m in members:
-        active = db.query(Followup).filter(
-            Followup.who == m.slug, Followup.status.in_(["open", "in_progress"])
-        ).all()
-        done = db.query(Followup).filter(
-            Followup.who == m.slug, Followup.status == "resolved"
-        ).all()
-        overdue = [f for f in active if f.due and f.due < today]
-
-        perf = db.query(PerformanceSnapshot).filter(
-            PerformanceSnapshot.person == m.slug
-        ).order_by(PerformanceSnapshot.evaluated_at.desc()).first()
-
-        reliability = perf.on_time_rate if perf else 80
-        reliability_scores.append(reliability)
-
+        slug = m.get("slug", "")
+        person_fus = [f for f in fus if f.get("who") == slug]
+        active = [f for f in person_fus if f.get("status") in ("open", "in_progress")]
+        done = [f for f in person_fus if f.get("status") == "resolved"]
+        overdue = [f for f in active if f.get("due") and f["due"] < str(today)]
         total_active += len(active)
         total_done += len(done)
         total_overdue += len(overdue)
-
+        perf = convex_db.get_performance(slug)
+        reliability = perf.get("on_time_rate", 80) if perf else 80
         board.append({
-            "slug": m.slug,
-            "name": m.name,
-            "role": m.role,
-            "emoji": m.emoji,
-            "active_tasks": [{"fu_id": f.fu_id, "what": f.what, "due": str(f.due) if f.due else None, "priority": f.priority} for f in active],
+            "slug": slug,
+            "name": m.get("name", slug),
+            "role": m.get("role", ""),
+            "emoji": m.get("emoji", ""),
+            "active_tasks": [{"fu_id": f.get("fu_id", ""), "what": f.get("what", ""), "due": f.get("due"), "priority": f.get("priority")} for f in active],
             "active_count": len(active),
             "done_count": len(done),
             "overdue_count": len(overdue),
             "reliability": reliability,
             "health": get_person_health(reliability, len(overdue), len(active)),
-            "score": perf.score if perf else None,
-            "rating": perf.rating if perf else None,
+            "score": perf.get("score") if perf else None,
+            "rating": perf.get("rating") if perf else None,
         })
 
-    avg_reliability = round(sum(reliability_scores) / len(reliability_scores)) if reliability_scores else 0
-
     return {
-        "stats": {
-            "active_tasks": total_active,
-            "done_today": total_done,
-            "overdue": total_overdue,
-            "team_reliability": avg_reliability,
-        },
+        "stats": {"active_tasks": total_active, "done_today": total_done, "overdue": total_overdue, "team_reliability": 0},
         "team": board,
         "date": str(today),
     }
@@ -221,7 +196,6 @@ def get_pulse_board():
 
 @router.get("/summary")
 def get_pulse_summary():
-    # Try CoS workspace first
     followups = cos_reader.get_all_followups()
     roster = cos_reader.get_team_roster()
     today = str(date.today())
@@ -236,18 +210,16 @@ def get_pulse_summary():
             "team_size": len(roster),
         }
 
-    # Fallback to DB
-    members = db.query(TeamMember).count()
-    active = db.query(Followup).filter(Followup.status.in_(["open", "in_progress"])).count()
-    overdue = db.query(Followup).filter(
-        Followup.status.in_(["open", "in_progress"]),
-        Followup.due < date.today()
-    ).count()
+    # Fallback: Convex
+    members = convex_db.list_team_members() or []
+    fus = convex_db.list_followups() or []
+    active = [f for f in fus if f.get("status") in ("open", "in_progress")]
+    overdue = [f for f in active if f.get("due") and f["due"] < today]
     return {
-        "summary": f"{members} team members, {active} active tasks, {overdue} overdue",
-        "active": active,
-        "overdue": overdue,
-        "team_size": members,
+        "summary": f"{len(members)} team members, {len(active)} active tasks, {len(overdue)} overdue",
+        "active": len(active),
+        "overdue": len(overdue),
+        "team_size": len(members),
     }
 
 
@@ -290,41 +262,30 @@ def get_person_detail(slug: str):
             "health": get_person_health(perf.get("on_time_rate", 0) if perf else 0, len(overdue), len(active)),
         }
 
-    # Fallback to DB
-    member = db.query(TeamMember).filter(TeamMember.slug == slug).first()
+    # Fallback: Convex
+    member = convex_db.get_team_member(slug)
     if not member:
         return {"error": "Person not found"}
-
-    today_date = date.today()
-    tasks = db.query(Followup).filter(Followup.who == slug).all()
-    active = [f for f in tasks if f.status in ("open", "in_progress")]
-    resolved = [f for f in tasks if f.status == "resolved"]
-    overdue = [f for f in active if f.due and f.due < today_date]
-
-    db_perf = db.query(PerformanceSnapshot).filter(
-        PerformanceSnapshot.person == slug
-    ).order_by(PerformanceSnapshot.evaluated_at.desc()).first()
+    fus = convex_db.list_followups(who=slug) or []
+    active = [f for f in fus if f.get("status") in ("open", "in_progress")]
+    resolved = [f for f in fus if f.get("status") == "resolved"]
+    overdue = [f for f in active if f.get("due") and f["due"] < today]
+    cvx_perf = convex_db.get_performance(slug)
 
     return {
-        "member": {
-            "slug": member.slug,
-            "name": member.name,
-            "role": member.role,
-            "emoji": member.emoji,
-            "email": member.email,
-        },
+        "member": {"slug": slug, "name": member.get("name", slug), "role": member.get("role", ""), "emoji": "", "email": member.get("email")},
         "tasks": {
-            "active": [{"fu_id": f.fu_id, "what": f.what, "due": str(f.due) if f.due else None, "priority": f.priority, "status": f.status} for f in active],
-            "resolved": [{"fu_id": f.fu_id, "what": f.what, "resolved_at": str(f.resolved_at) if f.resolved_at else None} for f in resolved],
-            "overdue": [{"fu_id": f.fu_id, "what": f.what, "due": str(f.due)} for f in overdue],
+            "active": [{"fu_id": f.get("fu_id", ""), "what": f.get("what", ""), "due": f.get("due"), "priority": f.get("priority"), "status": f.get("status")} for f in active],
+            "resolved": [{"fu_id": f.get("fu_id", ""), "what": f.get("what", ""), "resolved_at": f.get("resolved_at")} for f in resolved],
+            "overdue": [{"fu_id": f.get("fu_id", ""), "what": f.get("what", ""), "due": f.get("due")} for f in overdue],
         },
         "performance": {
-            "score": db_perf.score if db_perf else None,
-            "rating": db_perf.rating if db_perf else None,
-            "completion_rate": db_perf.completion_rate if db_perf else None,
-            "on_time_rate": db_perf.on_time_rate if db_perf else None,
+            "score": cvx_perf.get("score") if cvx_perf else None,
+            "rating": cvx_perf.get("rating") if cvx_perf else None,
+            "completion_rate": cvx_perf.get("completion_rate") if cvx_perf else None,
+            "on_time_rate": cvx_perf.get("on_time_rate") if cvx_perf else None,
         },
-        "health": get_person_health(db_perf.on_time_rate if db_perf else 0, len(overdue), len(active)),
+        "health": get_person_health(cvx_perf.get("on_time_rate", 0) if cvx_perf else 0, len(overdue), len(active)),
     }
 
 
@@ -422,10 +383,8 @@ def _parse_ts(ts) -> str:
     if not ts:
         return ""
     s = str(ts)
-    # Already ISO-ish — just ensure it has time component
     if "T" in s:
-        return s[:26]  # trim timezone/microseconds for consistent sorting
-    # Date only: 2026-03-19
+        return s[:26]
     if len(s) == 10:
         return f"{s}T00:00:00"
     return s[:26]
@@ -443,7 +402,6 @@ def get_activity_feed(limit: int = 15):
         who = fu.get("who", "system")
         what_text = fu.get("what", "")[:50]
 
-        # Created event
         created = _parse_ts(fu.get("created"))
         if created:
             events.append({
@@ -454,7 +412,6 @@ def get_activity_feed(limit: int = 15):
                 "timestamp": created,
             })
 
-        # Resolved event
         resolved = _parse_ts(fu.get("resolved_at"))
         if resolved:
             events.append({

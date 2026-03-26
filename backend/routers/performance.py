@@ -1,16 +1,6 @@
 from fastapi import APIRouter, Query
 import convex_db
-from models import PerformanceSnapshot, TeamMember
-from schemas import PerformanceOut
 import cos_reader
-
-# Optional DB fallback (PostgreSQL)
-try:
-    from database import get_db as _get_db
-    from sqlalchemy.orm import Session as _Session
-    _DB_AVAILABLE = True
-except Exception:
-    _DB_AVAILABLE = False
 
 router = APIRouter(prefix="/api/performance", tags=["performance"])
 
@@ -47,28 +37,27 @@ def get_performance_report(
         report.sort(key=lambda x: x.get("score") or 0, reverse=True)
         return {"period": period, "team": report}
 
-    # Fallback to DB
-    members = db.query(TeamMember).all()
+    # Fallback: Convex
+    perf_all = convex_db.list_performance() or []
+    members = convex_db.list_team_members() or []
+    member_map = {m.get("slug"): m for m in members}
     report = []
-    for m in members:
-        snap = db.query(PerformanceSnapshot).filter(
-            PerformanceSnapshot.person == m.slug,
-            PerformanceSnapshot.period == period,
-        ).order_by(PerformanceSnapshot.evaluated_at.desc()).first()
-        if snap:
-            report.append({
-                "name": m.name,
-                "slug": m.slug,
-                "emoji": m.emoji,
-                "score": snap.score,
-                "rating": snap.rating,
-                "total_assigned": snap.total_assigned,
-                "total_completed": snap.total_completed,
-                "completion_rate": snap.completion_rate,
-                "on_time_rate": snap.on_time_rate,
-                "overdue_count": snap.overdue_count,
-            })
-    report.sort(key=lambda x: x["score"], reverse=True)
+    for p in perf_all:
+        slug = p.get("person", "")
+        m = member_map.get(slug, {})
+        report.append({
+            "name": m.get("name", slug),
+            "slug": slug,
+            "emoji": "",
+            "score": p.get("score"),
+            "rating": p.get("rating"),
+            "total_assigned": p.get("total_assigned"),
+            "total_completed": p.get("total_completed"),
+            "completion_rate": p.get("completion_rate"),
+            "on_time_rate": p.get("on_time_rate"),
+            "overdue_count": p.get("overdue_count"),
+        })
+    report.sort(key=lambda x: x.get("score") or 0, reverse=True)
     return {"period": period, "team": report}
 
 
@@ -95,21 +84,22 @@ def get_flagged_performers():
                 })
         return {"flagged": flagged}
 
-    # Fallback to DB
+    # Fallback: Convex
+    perf_all = convex_db.list_performance() or []
+    members = convex_db.list_team_members() or []
+    member_map = {m.get("slug"): m for m in members}
     flagged = []
-    members = db.query(TeamMember).all()
-    for m in members:
-        snap = db.query(PerformanceSnapshot).filter(
-            PerformanceSnapshot.person == m.slug
-        ).order_by(PerformanceSnapshot.evaluated_at.desc()).first()
-        if snap and snap.score < 65:
+    for p in perf_all:
+        if (p.get("score") or 100) < 65:
+            slug = p.get("person", "")
+            m = member_map.get(slug, {})
             flagged.append({
-                "name": m.name,
-                "slug": m.slug,
-                "score": snap.score,
-                "rating": snap.rating,
-                "on_time_rate": snap.on_time_rate,
-                "overdue_count": snap.overdue_count,
+                "name": m.get("name", slug),
+                "slug": slug,
+                "score": p.get("score"),
+                "rating": p.get("rating"),
+                "on_time_rate": p.get("on_time_rate"),
+                "overdue_count": p.get("overdue_count"),
             })
     return {"flagged": flagged}
 
@@ -142,37 +132,34 @@ def get_person_performance(person: str):
             "evaluated_at": perf.get("evaluated_at"),
         }
 
-    # Fallback to DB
-    member_db = db.query(TeamMember).filter(TeamMember.slug == person).first()
-    if not member_db:
+    # Fallback: Convex
+    member = convex_db.get_team_member(person)
+    if not member:
         return {"error": "Person not found"}
-    snap = db.query(PerformanceSnapshot).filter(
-        PerformanceSnapshot.person == person
-    ).order_by(PerformanceSnapshot.evaluated_at.desc()).first()
+    snap = convex_db.get_performance(person)
     if not snap:
         return {"error": "No performance data"}
     return {
-        "name": member_db.name,
-        "slug": member_db.slug,
-        "emoji": member_db.emoji,
-        "role": member_db.role,
-        "score": snap.score,
-        "rating": snap.rating,
-        "total_assigned": snap.total_assigned,
-        "total_completed": snap.total_completed,
-        "completion_rate": snap.completion_rate,
-        "on_time_rate": snap.on_time_rate,
-        "overdue_count": snap.overdue_count,
-        "period": snap.period,
+        "name": member.get("name", person),
+        "slug": person,
+        "emoji": "",
+        "role": member.get("role", ""),
+        "score": snap.get("score"),
+        "rating": snap.get("rating"),
+        "total_assigned": snap.get("total_assigned"),
+        "total_completed": snap.get("total_completed"),
+        "completion_rate": snap.get("completion_rate"),
+        "on_time_rate": snap.get("on_time_rate"),
+        "overdue_count": snap.get("overdue_count"),
+        "period": snap.get("period"),
     }
 
 
 @router.get("/{person}/history")
 def get_person_history(person: str):
-    # Primary: CoS workspace — collect all evaluation files for this person
+    # Primary: CoS workspace
     perf = cos_reader.get_person_performance(person)
     if perf:
-        # Currently one snapshot per person; return as single-item history
         return {
             "person": person,
             "history": [
@@ -187,21 +174,21 @@ def get_person_history(person: str):
             ],
         }
 
-    # Fallback to DB
-    snaps = db.query(PerformanceSnapshot).filter(
-        PerformanceSnapshot.person == person
-    ).order_by(PerformanceSnapshot.evaluated_at.asc()).all()
+    # Fallback: Convex
+    perf_all = convex_db.list_performance() or []
+    person_snaps = [p for p in perf_all if p.get("person") == person]
+    person_snaps.sort(key=lambda x: x.get("evaluated_at", ""))
     return {
         "person": person,
         "history": [
             {
-                "date": str(s.evaluated_at.date()) if s.evaluated_at else None,
-                "score": s.score,
-                "completion_rate": s.completion_rate,
-                "on_time_rate": s.on_time_rate,
-                "overdue_count": s.overdue_count,
-                "period": s.period,
+                "date": s.get("evaluated_at", "")[:10] if s.get("evaluated_at") else None,
+                "score": s.get("score"),
+                "completion_rate": s.get("completion_rate"),
+                "on_time_rate": s.get("on_time_rate"),
+                "overdue_count": s.get("overdue_count"),
+                "period": s.get("period"),
             }
-            for s in snaps
+            for s in person_snaps
         ],
     }

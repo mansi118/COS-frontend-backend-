@@ -1,17 +1,8 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 import convex_db
-from models import Client, ClientContact
-from schemas import ClientCreate, ClientUpdate, ClientOut
+from schemas import ClientCreate, ClientUpdate
 from datetime import datetime
 import cos_reader
-
-# Optional DB fallback (PostgreSQL)
-try:
-    from database import get_db as _get_db
-    from sqlalchemy.orm import Session as _Session
-    _DB_AVAILABLE = True
-except Exception:
-    _DB_AVAILABLE = False
 
 router = APIRouter(prefix="/api/clients", tags=["clients"])
 
@@ -46,8 +37,9 @@ def list_clients():
         results.sort(key=lambda x: x.get("health_score") or 100)
         return results
 
-    # Fallback to DB
-    return db.query(Client).order_by(Client.health_score.asc()).all()
+    # Fallback: Convex
+    cvx_clients = convex_db.list_clients() or []
+    return [_cos_to_api(c, i + 1) for i, c in enumerate(cvx_clients)]
 
 
 @router.get("/health")
@@ -70,17 +62,18 @@ def get_at_risk_clients():
             ]
         }
 
-    # Fallback to DB
-    at_risk = db.query(Client).filter(Client.health_score < 60).all()
+    # Fallback: Convex
+    cvx_clients = convex_db.list_clients() or []
+    at_risk = [c for c in cvx_clients if (c.get("health_score") or 100) < 60]
     return {
         "at_risk": [
             {
-                "slug": c.slug,
-                "name": c.name,
-                "health_score": c.health_score,
-                "phase": c.phase,
-                "sentiment": c.sentiment,
-                "last_interaction": str(c.last_interaction) if c.last_interaction else None,
+                "slug": c.get("slug"),
+                "name": c.get("name"),
+                "health_score": c.get("health_score"),
+                "phase": c.get("phase"),
+                "sentiment": c.get("sentiment"),
+                "last_interaction": c.get("last_interaction"),
             }
             for c in at_risk
         ]
@@ -94,11 +87,11 @@ def get_client(slug: str):
     if cos_client:
         return _cos_to_api(cos_client, 1)
 
-    # Fallback to DB
-    client = db.query(Client).filter(Client.slug == slug).first()
-    if not client:
-        return {"error": "Client not found"}
-    return client
+    # Fallback: Convex
+    cvx_client = convex_db.get_client(slug)
+    if cvx_client:
+        return _cos_to_api(cvx_client, 1)
+    return {"error": "Client not found"}
 
 
 @router.post("")
@@ -124,12 +117,22 @@ def create_client(data: ClientCreate):
     }
     cos_reader.write_client(data.slug, cos_data)
 
-    # Also write to DB
-    client = Client(**data.model_dump())
-    db.add(client)
-    db.commit()
-    db.refresh(client)
-    return client
+    # Also write to Convex
+    cvx_data = {
+        "slug": data.slug,
+        "name": data.name,
+        "industry": data.industry,
+        "phase": data.phase or "active",
+        "contract_value": data.contract_value,
+        "health_score": data.health_score or 80,
+        "sentiment": data.sentiment or "neutral",
+        "created_at": now,
+    }
+    # Strip None values for Convex
+    cvx_data = {k: v for k, v in cvx_data.items() if v is not None}
+    convex_db.create_client(cvx_data)
+
+    return _cos_to_api(cos_data, 1)
 
 
 @router.put("/{slug}")
@@ -148,14 +151,17 @@ def update_client(slug: str, data: ClientUpdate):
                 cos_client[key] = val
         cos_reader.write_client(slug, cos_client)
 
-    # Also update DB
-    client = db.query(Client).filter(Client.slug == slug).first()
-    if not client:
-        if cos_client:
-            return _cos_to_api(cos_client, 1)
-        return {"error": "Client not found"}
+    # Also update Convex
+    cvx_updates = {}
     for key, val in updates.items():
-        setattr(client, key, val)
-    db.commit()
-    db.refresh(client)
-    return client
+        if val is not None:
+            if key == "last_interaction":
+                cvx_updates[key] = str(val)
+            else:
+                cvx_updates[key] = val
+    if cvx_updates:
+        convex_db.update_client(slug, cvx_updates)
+
+    if cos_client:
+        return _cos_to_api(cos_client, 1)
+    return {"error": "Client not found"}

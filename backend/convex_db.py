@@ -169,3 +169,240 @@ def get_performance(person: str) -> Optional[dict]:
 def insert_board_snapshot(data: dict) -> Optional[str]:
     """Insert a board snapshot."""
     return mutate("board_snapshots:create", data)
+
+
+# --- Sprint wrappers ---
+
+def list_sprints() -> Optional[list]:
+    """List all sprints."""
+    return query("sprints:list")
+
+
+def create_sprint(data: dict) -> Optional[str]:
+    """Create a new sprint (auto-closes active one)."""
+    return mutate("sprints:create", data)
+
+
+def close_sprint() -> Optional[str]:
+    """Close the active sprint."""
+    return mutate("sprints:closeSprint", {})
+
+
+def list_sprint_updates(sprint_id: str = None, week_label: str = None, person: str = None) -> Optional[list]:
+    """List sprint updates with optional filters."""
+    args = {}
+    if sprint_id:
+        args["sprint_id"] = sprint_id
+    if week_label:
+        args["week_label"] = week_label
+    if person:
+        args["person"] = person
+    return query("sprints:listUpdates", args)
+
+
+def patch_sprint_update(update_id: str, data: dict) -> Optional[str]:
+    """Patch a sprint update (notified flags)."""
+    return mutate("sprints:patchUpdate", {"update_id": update_id, **data})
+
+
+def get_sprint_update(update_id: str) -> Optional[dict]:
+    """Get a sprint update by ID."""
+    return query("sprints:getUpdateById", {"update_id": update_id})
+
+
+# --- Client wrappers ---
+
+def get_client(slug: str) -> Optional[dict]:
+    """Get a client by slug."""
+    return query("clients:getBySlug", {"slug": slug})
+
+
+def create_client(data: dict) -> Optional[str]:
+    """Create a new client."""
+    return mutate("clients:create", data)
+
+
+def update_client(slug: str, data: dict) -> Optional[str]:
+    """Update a client by slug."""
+    return mutate("clients:update", {"slug": slug, **data})
+
+
+def list_client_contacts(client_slug: str) -> Optional[list]:
+    """List contacts for a client."""
+    return query("clients:listContacts", {"client_slug": client_slug})
+
+
+def insert_client_contact(data: dict) -> Optional[str]:
+    """Insert a client contact."""
+    return mutate("clients:insertContact", data)
+
+
+# --- Performance wrappers ---
+
+def list_performance() -> Optional[list]:
+    """List all performance snapshots."""
+    return query("performance:listAll")
+
+
+def create_performance(data: dict) -> Optional[str]:
+    """Insert a performance snapshot."""
+    return mutate("performance:create", data)
+
+
+# --- Team member wrappers ---
+
+def get_team_member(slug: str) -> Optional[dict]:
+    """Get a team member by slug."""
+    return query("team_members:getBySlug", {"slug": slug})
+
+
+def create_team_member(data: dict) -> Optional[str]:
+    """Create a team member."""
+    return mutate("team_members:create", data)
+
+
+# --- Notification wrappers ---
+
+def list_notifications(limit: int = 50) -> Optional[list]:
+    """List recent notification logs."""
+    return query("notifications:listRecent", {"limit": limit})
+
+
+# --- Board snapshot wrappers ---
+
+def get_board_snapshot(date: str = None) -> Optional[dict]:
+    """Get board snapshot by date, or latest."""
+    if date:
+        return query("board_snapshots:getByDate", {"date": date})
+    return query("board_snapshots:latest")
+
+
+# --- Standup wrappers ---
+
+def post_standup(data: dict) -> Optional[str]:
+    """Create/upsert a standup."""
+    return mutate("standups:create", data)
+
+
+def get_standup(person: str, date: str) -> Optional[dict]:
+    """Get a standup by person + date."""
+    return query("standups:getByPersonDate", {"person": person, "date": date})
+
+
+def update_standup(person: str, date: str, data: dict) -> Optional[str]:
+    """Update a standup."""
+    return mutate("standups:update", {"person": person, "date": date, **data})
+
+
+def get_standups_by_date(date_str: str) -> Optional[list]:
+    """Get all standups for a date."""
+    return query("standups:getByDate", {"date": date_str})
+
+
+def get_person_standup_history(person: str, limit: int = 14) -> Optional[list]:
+    """Get standup history for a person."""
+    return query("standups:list", {"person": person, "limit": limit})
+
+
+# --- Task wrappers ---
+
+def list_tasks(status: str = None, owner: str = None, project_id: str = None) -> Optional[list]:
+    """List tasks with optional filters."""
+    args = {}
+    if status:
+        args["status"] = status
+    if owner:
+        args["owner"] = owner
+    if project_id:
+        args["project_id"] = project_id
+    return query("tasks:list", args)
+
+
+def get_task(task_id: str) -> Optional[dict]:
+    """Get a task by task_id."""
+    return query("tasks:getByTaskId", {"task_id": task_id})
+
+
+def create_task(data: dict) -> Optional[str]:
+    """Create a new task."""
+    return mutate("tasks:create", data)
+
+
+def update_task(task_id: str, data: dict) -> Optional[str]:
+    """Update a task."""
+    return mutate("tasks:update", {"task_id": task_id, **data})
+
+
+def complete_task(task_id: str) -> Optional[str]:
+    """Mark a task as completed."""
+    return mutate("tasks:complete", {"task_id": task_id})
+
+
+def uncomplete_task(task_id: str) -> Optional[str]:
+    """Reopen a completed task."""
+    return mutate("tasks:uncomplete", {"task_id": task_id})
+
+
+def trash_task(task_id: str) -> Optional[str]:
+    """Trash a task."""
+    return mutate("tasks:trash", {"task_id": task_id})
+
+
+def restore_task(task_id: str) -> Optional[str]:
+    """Restore a trashed task."""
+    return mutate("tasks:restore", {"task_id": task_id})
+
+
+def delete_task(task_id: str) -> Optional[str]:
+    """Hard-delete a task."""
+    return mutate("tasks:remove", {"task_id": task_id})
+
+
+# --- TaskFlow meta wrappers ---
+
+def list_projects() -> Optional[list]:
+    return query("taskflow_meta:listProjects")
+
+
+def create_project(data: dict) -> Optional[str]:
+    return mutate("taskflow_meta:createProject", data)
+
+
+def update_project(project_id: str, data: dict) -> Optional[str]:
+    return mutate("taskflow_meta:updateProject", {"project_id": project_id, **data})
+
+
+def delete_project(project_id: str) -> Optional[str]:
+    return mutate("taskflow_meta:deleteProject", {"project_id": project_id})
+
+
+def list_areas() -> Optional[list]:
+    return query("taskflow_meta:listAreas")
+
+
+def create_area(data: dict) -> Optional[str]:
+    return mutate("taskflow_meta:createArea", data)
+
+
+def update_area(area_id: str, data: dict) -> Optional[str]:
+    return mutate("taskflow_meta:updateArea", {"area_id": area_id, **data})
+
+
+def delete_area(area_id: str) -> Optional[str]:
+    return mutate("taskflow_meta:deleteArea", {"area_id": area_id})
+
+
+def list_tags() -> Optional[list]:
+    return query("taskflow_meta:listTags")
+
+
+def create_tag(data: dict) -> Optional[str]:
+    return mutate("taskflow_meta:createTag", data)
+
+
+def update_tag(tag_id: str, data: dict) -> Optional[str]:
+    return mutate("taskflow_meta:updateTag", {"tag_id": tag_id, **data})
+
+
+def delete_tag(tag_id: str) -> Optional[str]:
+    return mutate("taskflow_meta:deleteTag", {"tag_id": tag_id})

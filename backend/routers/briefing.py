@@ -1,16 +1,7 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 import convex_db
-from models import Followup, TeamMember, Client, Sprint, PerformanceSnapshot
 from datetime import date
 import cos_reader
-
-# Optional DB fallback (PostgreSQL)
-try:
-    from database import get_db as _get_db
-    from sqlalchemy.orm import Session as _Session
-    _DB_AVAILABLE = True
-except Exception:
-    _DB_AVAILABLE = False
 
 router = APIRouter(prefix="/api/briefing", tags=["briefing"])
 
@@ -23,7 +14,6 @@ def morning_briefing():
     # Primary: CoS workspace
     followups = cos_reader.get_all_followups()
     meetings = cos_reader.get_meetings(today_str)
-    board = cos_reader.get_board_snapshot()
     perf_data = cos_reader.get_performance_data()
     cos_sprint = cos_reader.get_active_sprint()
     clients = cos_reader.get_all_clients()
@@ -58,7 +48,7 @@ def morning_briefing():
 
         # Flagged performers
         flagged = []
-        for p in perf_data:
+        for p in (perf_data or []):
             if (p.get("score") or 100) < 65:
                 flagged.append({
                     "name": p.get("name", p.get("person", "")),
@@ -104,46 +94,32 @@ def morning_briefing():
             "meetings_count": len(meeting_list),
         }
 
-    # Fallback to DB
-    overdue = db.query(Followup).filter(
-        Followup.status.in_(["open", "in_progress"]),
-        Followup.due < today,
-    ).count()
-    due_today = db.query(Followup).filter(
-        Followup.status.in_(["open", "in_progress"]),
-        Followup.due == today,
-    ).count()
-    active = db.query(Followup).filter(
-        Followup.status.in_(["open", "in_progress"])
-    ).count()
-
-    at_risk_clients = db.query(Client).filter(Client.health_score < 60).count()
-
-    sprint = db.query(Sprint).filter(Sprint.status == "active").first()
+    # Fallback: Convex
+    fus = convex_db.list_followups() or []
+    active_fus = [f for f in fus if f.get("status") in ("open", "in_progress")]
+    overdue = [f for f in active_fus if f.get("due") and f["due"] < today_str]
+    due_today = [f for f in active_fus if f.get("due") == today_str]
+    cvx_clients = convex_db.list_clients() or []
+    at_risk_clients = len([c for c in cvx_clients if (c.get("health_score") or 100) < 60])
+    sprint = convex_db.get_active_sprint()
     sprint_info = None
     if sprint:
-        total_days = (sprint.end_date - sprint.start_date).days or 1
-        elapsed = (today - sprint.start_date).days
-        sprint_info = {
-            "name": sprint.name,
-            "days_remaining": max(0, total_days - elapsed),
-            "time_pct": min(round((elapsed / total_days) * 100), 100),
-        }
-
-    flagged = []
-    for m in db.query(TeamMember).all():
-        snap = db.query(PerformanceSnapshot).filter(
-            PerformanceSnapshot.person == m.slug
-        ).order_by(PerformanceSnapshot.evaluated_at.desc()).first()
-        if snap and snap.score < 65:
-            flagged.append({"name": m.name, "score": snap.score})
+        try:
+            total_days = (date.fromisoformat(sprint["end_date"]) - date.fromisoformat(sprint["start_date"])).days or 1
+            elapsed = (today - date.fromisoformat(sprint["start_date"])).days
+            sprint_info = {"name": sprint.get("name", ""), "days_remaining": max(0, total_days - elapsed), "time_pct": min(round((elapsed / total_days) * 100), 100)}
+        except (ValueError, TypeError, KeyError):
+            pass
+    perf_all = convex_db.list_performance() or []
+    flagged = [{"name": p.get("person", ""), "score": p.get("score")} for p in perf_all if (p.get("score") or 100) < 65]
 
     return {
-        "date": str(today),
+        "date": today_str,
         "greeting": f"Good morning! Here's your briefing for {today.strftime('%A, %B %d')}.",
-        "overdue_tasks": overdue,
-        "due_today": due_today,
-        "active_tasks": active,
+        "overdue_tasks": len(overdue),
+        "overdue_details": [{"fu_id": f.get("fu_id"), "what": f.get("what"), "who": f.get("who"), "due": f.get("due"), "priority": f.get("priority")} for f in overdue],
+        "due_today": len(due_today),
+        "active_tasks": len(active_fus),
         "at_risk_clients": at_risk_clients,
         "sprint": sprint_info,
         "flagged_performers": flagged,
@@ -194,23 +170,15 @@ def eod_summary():
             "summary": f"Today: {len(resolved)} resolved, {len(active)} still open, {len(overdue)} overdue.",
         }
 
-    # Fallback to DB
-    resolved_today = db.query(Followup).filter(
-        Followup.status == "resolved",
-        Followup.resolved_at != None,
-    ).count()
-    still_open = db.query(Followup).filter(
-        Followup.status.in_(["open", "in_progress"])
-    ).count()
-    overdue = db.query(Followup).filter(
-        Followup.status.in_(["open", "in_progress"]),
-        Followup.due < today,
-    ).count()
-
+    # Fallback: Convex
+    fus = convex_db.list_followups() or []
+    active = [f for f in fus if f.get("status") in ("open", "in_progress")]
+    resolved = [f for f in fus if f.get("status") == "resolved"]
+    overdue = [f for f in active if f.get("due") and f["due"] < today_str]
     return {
-        "date": str(today),
-        "resolved_today": resolved_today,
-        "still_open": still_open,
-        "overdue": overdue,
-        "summary": f"Today: {resolved_today} resolved, {still_open} still open, {overdue} overdue.",
+        "date": today_str,
+        "resolved_today": len(resolved),
+        "still_open": len(active),
+        "overdue": len(overdue),
+        "summary": f"Today: {len(resolved)} resolved, {len(active)} still open, {len(overdue)} overdue.",
     }

@@ -5,6 +5,7 @@ import os
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 import cos_reader
+import convex_db
 
 COS_WORKSPACE = os.getenv("COS_WORKSPACE", "/home/mansigambhir/.openclaw/workspace")
 STANDUPS_DIR = os.path.join(COS_WORKSPACE, "data", "standups")
@@ -94,6 +95,14 @@ def post_standup(person: str, data: dict) -> dict:
 
     path = os.path.join(STANDUPS_DIR, today, f"{person}.json")
     _write_json(path, standup)
+
+    # Dual-write to Convex
+    try:
+        cvx_data = {k: v for k, v in standup.items() if v is not None}
+        convex_db.post_standup(cvx_data)
+    except Exception as e:
+        print(f"[standup_local] Convex dual-write failed: {e}")
+
     return standup
 
 
@@ -115,6 +124,14 @@ def update_standup(person: str, data: dict) -> Optional[dict]:
     existing["updated_at"] = _now_ist()
     path = os.path.join(STANDUPS_DIR, today, f"{person}.json")
     _write_json(path, existing)
+
+    # Dual-write to Convex
+    try:
+        update_fields = {k: v for k, v in existing.items() if k not in ("person", "date") and v is not None}
+        convex_db.update_standup(person, today, update_fields)
+    except Exception as e:
+        print(f"[standup_local] Convex update failed: {e}")
+
     return existing
 
 

@@ -5,6 +5,8 @@ import os
 from datetime import date, datetime, timedelta
 from typing import Optional
 
+import convex_db
+
 COS_WORKSPACE = os.getenv("COS_WORKSPACE", "/home/mansigambhir/.openclaw/workspace")
 TASKS_DIR = os.path.join(COS_WORKSPACE, "data", "tasks")
 META_DIR = os.path.join(COS_WORKSPACE, "data", "taskflow-meta")
@@ -228,6 +230,16 @@ def create_task(data: dict) -> dict:
     }
 
     _write_json(os.path.join(TASKS_DIR, f"{task_id}.json"), task)
+
+    # Dual-write to Convex
+    try:
+        cvx = {k: v for k, v in task.items() if v is not None and k != "id"}
+        cvx["task_id"] = task_id
+        cvx["status"] = task.get("status", "inbox")
+        convex_db.create_task(cvx)
+    except Exception as e:
+        print(f"[taskflow_local] Convex create failed: {e}")
+
     return task
 
 
@@ -243,6 +255,17 @@ def update_task(task_id: str, data: dict) -> Optional[dict]:
     if task.get("status") == "inbox" and (task.get("when_date") or task.get("project_id") or task.get("is_today")):
         task["status"] = "active"
     _write_json(os.path.join(TASKS_DIR, f"{task_id}.json"), task)
+
+    # Dual-write to Convex
+    try:
+        cvx_updates = {k: v for k, v in data.items() if k != "id" and v is not None}
+        cvx_updates["updated"] = task["updated"]
+        if "status" in task:
+            cvx_updates["status"] = task["status"]
+        convex_db.update_task(task_id, cvx_updates)
+    except Exception as e:
+        print(f"[taskflow_local] Convex update failed: {e}")
+
     return task
 
 
@@ -254,6 +277,10 @@ def complete_task(task_id: str) -> Optional[dict]:
     task["completed_at"] = datetime.utcnow().isoformat()
     task["updated"] = datetime.utcnow().isoformat()
     _write_json(os.path.join(TASKS_DIR, f"{task_id}.json"), task)
+    try:
+        convex_db.complete_task(task_id)
+    except Exception:
+        pass
     return task
 
 
@@ -265,6 +292,10 @@ def uncomplete_task(task_id: str) -> Optional[dict]:
     task["completed_at"] = None
     task["updated"] = datetime.utcnow().isoformat()
     _write_json(os.path.join(TASKS_DIR, f"{task_id}.json"), task)
+    try:
+        convex_db.uncomplete_task(task_id)
+    except Exception:
+        pass
     return task
 
 
@@ -287,6 +318,17 @@ def toggle_task_checklist(task_id: str, item_index: int) -> Optional[dict]:
         task["status"] = "active"
         task["completed_at"] = None
     _write_json(os.path.join(TASKS_DIR, f"{task_id}.json"), task)
+
+    # Dual-write checklist state to Convex
+    try:
+        cvx_items = [{"title": ci.get("title", ""), "is_completed": ci.get("is_completed", False)} for ci in items]
+        cvx_updates = {"checklist_items": cvx_items, "updated": task["updated"], "status": task["status"]}
+        if task.get("completed_at"):
+            cvx_updates["completed_at"] = task["completed_at"]
+        convex_db.update_task(task_id, cvx_updates)
+    except Exception:
+        pass
+
     return task
 
 
@@ -298,6 +340,10 @@ def trash_task(task_id: str) -> Optional[dict]:
     task["trashed_at"] = datetime.utcnow().isoformat()
     task["updated"] = datetime.utcnow().isoformat()
     _write_json(os.path.join(TASKS_DIR, f"{task_id}.json"), task)
+    try:
+        convex_db.trash_task(task_id)
+    except Exception:
+        pass
     return task
 
 
@@ -309,6 +355,10 @@ def restore_task(task_id: str) -> Optional[dict]:
     task["trashed_at"] = None
     task["updated"] = datetime.utcnow().isoformat()
     _write_json(os.path.join(TASKS_DIR, f"{task_id}.json"), task)
+    try:
+        convex_db.restore_task(task_id)
+    except Exception:
+        pass
     return task
 
 

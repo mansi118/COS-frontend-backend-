@@ -10,12 +10,7 @@ from routers import pulse, followups, performance, clients, sprint, briefing, ta
 import cos_reader
 import convex_db
 
-# Initialize DB tables if PostgreSQL is available (legacy fallback)
-try:
-    from database import engine, Base
-    Base.metadata.create_all(bind=engine)
-except Exception:
-    print("[STARTUP] PostgreSQL not available — using Convex/CoS JSON only")
+# PostgreSQL removed — using Convex as primary database, CoS JSON as secondary
 
 app = FastAPI(title="NeuralEDGE CoS Dashboard API", version="1.0.0")
 

@@ -131,6 +131,75 @@ export default defineSchema({
     created_at: v.optional(v.string()),
   }).index("by_date", ["date"]),
 
+  standups: defineTable({
+    person: v.string(),
+    name: v.optional(v.string()),
+    date: v.string(),
+    done: v.optional(v.string()),
+    doing: v.optional(v.string()),
+    blockers: v.optional(v.string()),
+    mood: v.optional(v.string()),
+    highlights: v.optional(v.array(v.string())),
+    linked_tasks: v.optional(v.array(v.string())),
+    doing_priorities: v.optional(v.any()),
+    created_at: v.optional(v.string()),
+    updated_at: v.optional(v.string()),
+  }).index("by_person", ["person"])
+    .index("by_date", ["date"])
+    .index("by_person_and_date", ["person", "date"]),
+
+  tasks: defineTable({
+    task_id: v.string(),
+    title: v.string(),
+    notes: v.optional(v.string()),
+    status: v.string(),
+    when_date: v.optional(v.string()),
+    deadline: v.optional(v.string()),
+    is_today: v.optional(v.boolean()),
+    is_someday: v.optional(v.boolean()),
+    project_id: v.optional(v.string()),
+    area_id: v.optional(v.string()),
+    tags: v.optional(v.array(v.string())),
+    priority_hint: v.optional(v.string()),
+    checklist_items: v.optional(v.array(v.object({
+      title: v.string(),
+      is_completed: v.boolean(),
+    }))),
+    owner: v.optional(v.string()),
+    source: v.optional(v.string()),
+    created: v.optional(v.string()),
+    updated: v.optional(v.string()),
+    completed_at: v.optional(v.string()),
+    trashed_at: v.optional(v.string()),
+  }).index("by_task_id", ["task_id"])
+    .index("by_status", ["status"])
+    .index("by_owner", ["owner"])
+    .index("by_project", ["project_id"]),
+
+  taskflow_projects: defineTable({
+    project_id: v.string(),
+    name: v.string(),
+    color: v.optional(v.string()),
+    status: v.optional(v.string()),
+    notes: v.optional(v.string()),
+    area_id: v.optional(v.string()),
+    deadline: v.optional(v.string()),
+  }).index("by_project_id", ["project_id"]),
+
+  taskflow_areas: defineTable({
+    area_id: v.string(),
+    name: v.string(),
+    color: v.optional(v.string()),
+    icon: v.optional(v.string()),
+  }).index("by_area_id", ["area_id"]),
+
+  taskflow_tags: defineTable({
+    tag_id: v.string(),
+    name: v.string(),
+    slug: v.optional(v.string()),
+    color: v.optional(v.string()),
+  }).index("by_tag_id", ["tag_id"]),
+
   vexa_meetings: defineTable({
     title: v.string(),
     platform: v.string(),
